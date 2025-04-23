@@ -75,9 +75,9 @@ OUTPUT_DIR="/path/to/your/output_directory/gpt2_p6000_test1_venv"
 PRIMING_DIR="/path/to/your/priming_csv_directory" # Needed if using --run_priming_eval
 
 # Define Neptune args (Project might be set via cred file now, Run Name/Tags are still useful)
-NEPTUNE_PROJECT_ARG=""
+#NEPTUNE_PROJECT_ARG=""
 # If NEPTUNE_PROJECT is NOT exported in your cred file, uncomment and set it here:
-# NEPTUNE_PROJECT_ARG="--neptune_project YOUR_ORG/YOUR_PROJECT"
+NEPTUNE_PROJECT_ARG="--neptune_project thmorton/NothingProject"
 NEPTUNE_RUN_NAME="gpt2_p6000_test1_venv_$(date +%Y%m%d_%H%M)" # Example name
 NEPTUNE_TAGS="p6000" "test1" "baseline" "venv"
 
