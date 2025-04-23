@@ -5,8 +5,8 @@
 #SBATCH --partition=general_gpu_p6000    # Target the P6000 queue
 #SBATCH --nodes=1                        # Request one node
 #SBATCH --ntasks-per-node=1              # Run one task (the python script)
-#SBATCH --cpus-per-task=8                # Request CPUs for the task (dataloader workers, etc.)
-#SBATCH --mem=48G                        # Request RAM for the task (Node has 64GB total)
+#SBATCH --cpus-per-task=4                # Request CPUs for the task (dataloader workers, etc.)
+#SBATCH --mem=24G                        # Request RAM for the task (Node has 64GB total)
 #SBATCH --gres=gpu:1                     # Request 1 GPU
 #SBATCH --time=24:00:00                  # Time limit (HH:MM:SS) - e.g., 24 hours for first test
 #SBATCH --output=logs/%x_%j.out          # Standard output log file (%x=job name, %j=job ID) - Relative to submission dir
