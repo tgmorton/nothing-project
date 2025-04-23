@@ -1,0 +1,61 @@
+{
+  "builder_name": "text",
+  "citation": "",
+  "config_name": "default",
+  "dataset_name": "text",
+  "dataset_size": 55052871,
+  "description": "",
+  "download_checksums": {
+    "/Users/thomasmorton/Library/Mobile Documents/com~apple~CloudDocs/UCSD/Projects/05-NothingPriming/ModelFolder/src/../data/raw/text_data/test/bnc_spoken.test": {
+      "num_bytes": 4889225,
+      "checksum": null
+    },
+    "/Users/thomasmorton/Library/Mobile Documents/com~apple~CloudDocs/UCSD/Projects/05-NothingPriming/ModelFolder/src/../data/raw/text_data/test/childes.test": {
+      "num_bytes": 14707424,
+      "checksum": null
+    },
+    "/Users/thomasmorton/Library/Mobile Documents/com~apple~CloudDocs/UCSD/Projects/05-NothingPriming/ModelFolder/src/../data/raw/text_data/test/gutenberg.test": {
+      "num_bytes": 13296106,
+      "checksum": null
+    },
+    "/Users/thomasmorton/Library/Mobile Documents/com~apple~CloudDocs/UCSD/Projects/05-NothingPriming/ModelFolder/src/../data/raw/text_data/test/open_subtitles.test": {
+      "num_bytes": 10388196,
+      "checksum": null
+    },
+    "/Users/thomasmorton/Library/Mobile Documents/com~apple~CloudDocs/UCSD/Projects/05-NothingPriming/ModelFolder/src/../data/raw/text_data/test/simple_wiki.test": {
+      "num_bytes": 7618762,
+      "checksum": null
+    },
+    "/Users/thomasmorton/Library/Mobile Documents/com~apple~CloudDocs/UCSD/Projects/05-NothingPriming/ModelFolder/src/../data/raw/text_data/test/switchboard.test": {
+      "num_bytes": 823158,
+      "checksum": null
+    }
+  },
+  "download_size": 51722871,
+  "features": {
+    "input_ids": {
+      "feature": {
+        "dtype": "int32",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    }
+  },
+  "homepage": "",
+  "license": "",
+  "size_in_bytes": 106775742,
+  "splits": {
+    "train": {
+      "name": "train",
+      "num_bytes": 55052871,
+      "num_examples": 1110000,
+      "dataset_name": "text"
+    }
+  },
+  "version": {
+    "version_str": "0.0.0",
+    "major": 0,
+    "minor": 0,
+    "patch": 0
+  }
+}
