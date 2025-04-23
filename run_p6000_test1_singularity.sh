@@ -11,8 +11,6 @@
 #SBATCH --time=24:00:00                  # Time limit (HH:MM:SS) - e.g., 24 hours for first test
 #SBATCH --output=logs/%x_%j.out          # Standard output log file (%x=job name, %j=job ID) - Relative to submission dir
 #SBATCH --error=logs/%x_%j.err           # Standard error log file - Relative to submission dir
-#SBATCH --mail-type=BEGIN,END,FAIL       # Optional: Send email on job events
-#SBATCH --mail-user=your_email@example.com # Optional: Your email address
 
 # Exit on error
 set -e
