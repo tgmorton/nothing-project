@@ -11,8 +11,6 @@
 #SBATCH --time=24:00:00                  # Time limit (HH:MM:SS) - e.g., 24 hours for first test
 #SBATCH --output=logs/%x_%j.out          # Standard output log file (%x=job name, %j=job ID) - Relative to submission dir
 #SBATCH --error=logs/%x_%j.err           # Standard error log file - Relative to submission dir
-#SBATCH --mail-type=BEGIN,END,FAIL       # Optional: Send email on job events
-#SBATCH --mail-user=your_email@example.com # Optional: Your email address
 
 # Exit on error
 set -e
@@ -115,7 +113,7 @@ singularity exec --nv \
     -B "${HOST_OUTPUT_BASE_DIR}":"${CONTAINER_OUTPUT_DIR}" \
     -B "${HOST_PRIMING_BASE_DIR}":"${CONTAINER_PRIMING_DIR}" \
     "${HOST_SIF_PATH}" \
-    python3 "${CONTAINER_WORKSPACE}/src/train_with_priming.py" \
+    python3 "${CONTAINER_WORKSPACE}/src/train.py" \
         --model "gpt2" \
         --train_dataset_path "${CONTAINER_TRAIN_DATA_PATH}" \
         --validation_dataset_path "${CONTAINER_VALID_DATA_PATH}" \
