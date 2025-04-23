@@ -124,7 +124,7 @@ singularity exec --nv \
         --num_train_epochs 3 \
         --per_device_train_batch_size 16 \
         --gradient_accumulation_steps 32 \
-        --per_device_eval_batch_size 16 \
+        --per_device_eval_batch_size 32 \
         \
         --learning_rate 5e-5 \
         --lr_scheduler_type "cosine" \
