@@ -76,6 +76,8 @@ def parse_args():
     parser.add_argument("--priming_eval_steps", type=int, default=None, help="Run priming eval every X steps. Defaults to --eval_steps.")
     parser.add_argument("--priming_per_device_eval_batch_size", type=int, default=None, help="Priming eval batch size. Defaults to --per_device_eval_batch_size.")
     parser.add_argument("--priming_delimiter", type=str, default=".", help="Delimiter in priming CSVs.")
+    # --- START NEW ARGUMENT ---
+    parser.add_argument("--priming_eval_max_samples_per_file", type=int, default=1000, help="Maximum number of samples to use from each priming CSV file. Set <= 0 to use all samples. Reduces eval time.")
 
     args = parser.parse_args()
 
@@ -300,9 +302,11 @@ def run_priming_evaluation_on_directory(args, model, tokenizer, device, rank, ru
     if not args.run_priming_eval or not args.priming_eval_dir_path: return {}
 
     global logger
+    import numpy as np  # Needed for seeding RandomState if used in data_loader
     from pathlib import Path
     # Import priming libs here to keep them contained
     try:
+        # We assume create_priming_dataloader now accepts max_samples and seed
         from priming_evaluation.data_loader import create_priming_dataloader
         from priming_evaluation.evaluator import run_native_priming_eval
     except ImportError as e:
@@ -327,12 +331,20 @@ def run_priming_evaluation_on_directory(args, model, tokenizer, device, rank, ru
         csv_filename = csv_path.name
         logger.info(f"--- Running Priming Eval for: {csv_filename} (Step {global_step}) ---")
         priming_dataloader_single = None
-        if is_distributed: torch.distributed.barrier() # Sync before creating loader/running eval for each file
+        if is_distributed: torch.distributed.barrier()
         try:
+            # --- PASS NEW ARGUMENTS HERE ---
             priming_dataloader_single = create_priming_dataloader(
-                csv_path=str(csv_path), tokenizer=tokenizer,
+                csv_path=str(csv_path),
+                tokenizer=tokenizer,
                 batch_size=args.priming_per_device_eval_batch_size,
-                delimiter=args.priming_delimiter, num_workers=args.num_workers, pin_memory=True)
+                delimiter=args.priming_delimiter,
+                num_workers=args.num_workers,
+                pin_memory=True,
+                # --- Pass sampling args ---
+                max_samples=args.priming_eval_max_samples_per_file,  # New
+                seed=args.seed  # New (for reproducible sampling)
+            )
         except Exception as e: logger.error(f"Dataloader fail for {csv_filename}: {e}", exc_info=True); all_priming_results[csv_filename] = {"error": str(e)}; continue
         if priming_dataloader_single is None: logger.warning(f"Dataloader None for {csv_filename}. Skipping."); all_priming_results[csv_filename] = {"error": "Dataloader None."}; continue
 
