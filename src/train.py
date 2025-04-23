@@ -28,6 +28,12 @@ def parse_args():
         default=False,
         help="Skip standard evaluation (perplexity) during training or evaluation."
     )
+    parser.add_argument(
+        "--eval_max_samples",
+        type=int,
+        default=50000,
+        help="Maximum number of samples for evaluation. Default: 50,000. <= 0 uses full dataset"
+    )
 
     # === Essential Paths ===
     parser.add_argument("--train_dataset_path", type=str, default=None, help="Path to the training Arrow dataset. Required for training.")
@@ -153,6 +159,7 @@ def setup_distributed(args):
 def load_standard_data(args, is_distributed, rank, world_size, data_collator, mode='train'):
     """Loads standard Arrow datasets."""
     global logger
+    import numpy as np
     from datasets import load_from_disk
     from torch.utils.data import DataLoader, DistributedSampler, RandomSampler, SequentialSampler
     train_dl, eval_dl, train_sampler = None, None, None
@@ -172,13 +179,40 @@ def load_standard_data(args, is_distributed, rank, world_size, data_collator, mo
         if not args.validation_dataset_path: logger.error("Missing validation path."); raise ValueError("Missing path.")
         logger.info(f"Loading validation data: {args.validation_dataset_path}")
         try:
-            ds = load_from_disk(args.validation_dataset_path); logger.info(f"Eval size: {len(ds):,}")
-            sampler = SequentialSampler(ds) # Use Sequential for eval always
+            ds = load_from_disk(args.validation_dataset_path)
+            original_size = len(ds)
+            logger.info(f"Full Eval dataset size: {original_size:,} sequences")
+
+            # --- START SAMPLING LOGIC ---
+            if args.eval_max_samples > 0 and args.eval_max_samples < original_size:
+                logger.info(
+                    f"Sampling {args.eval_max_samples:,} sequences from validation set for standard evaluation (seed: {args.seed}).")
+                # Use a seeded random number generator for reproducibility
+                # Using RandomState ensures this seeding doesn't affect global numpy state elsewhere if needed
+                rng = np.random.RandomState(args.seed)
+                # Generate unique random indices without replacement
+                sampled_indices = rng.choice(original_size, size=args.eval_max_samples, replace=False)
+                # Select the subset using the generated indices
+                # .select() is efficient for Arrow datasets
+                ds = ds.select(sampled_indices)
+                logger.info(f"Using subset for Eval: {len(ds):,} sequences")
+            elif args.eval_max_samples > 0:
+                logger.info(
+                    f"Eval_max_samples ({args.eval_max_samples:,}) >= dataset size ({original_size:,}). Using full validation set.")
+            else:
+                logger.info("Eval_max_samples <= 0. Using full validation set.")
+            # --- END SAMPLING LOGIC ---
+
+            # Always use SequentialSampler for evaluation, even on the subset
+            sampler = SequentialSampler(ds)
             logger.info("Using SequentialSampler for standard eval.")
-            eval_dl = DataLoader(ds, sampler=sampler, batch_size=args.per_device_eval_batch_size, num_workers=args.num_workers, pin_memory=True, collate_fn=data_collator)
+            eval_dl = DataLoader(ds, sampler=sampler, batch_size=args.per_device_eval_batch_size,
+                                 num_workers=args.num_workers, pin_memory=True, collate_fn=data_collator)
             logger.info("Standard Eval DataLoader created.")
-        except Exception as e: logger.error(f"Validation data load fail: {e}"); raise
-    else: logger.info("Skipping standard eval data loading.")
+        except Exception as e:
+            logger.error(f"Validation data load/sampling fail: {e}"); raise
+    else:
+        logger.info("Skipping standard eval data loading.")
 
     return train_dl, eval_dl, train_sampler
 
