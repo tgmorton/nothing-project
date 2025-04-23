@@ -107,6 +107,8 @@ NEPTUNE_PROJECT_ARG="--neptune_project thmorton/NothingProject"
 NEPTUNE_RUN_NAME="${RUN_OUTPUT_NAME}_$(date +%Y%m%d_%H%M)" # Link run name to output dir name
 NEPTUNE_TAGS="p6000 test1 baseline singularity py39"       # Added space separation for tags
 
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 singularity exec --nv \
     -B "${HOST_PROJECT_DIR}":"${CONTAINER_WORKSPACE}" \
     -B "${HOST_DATA_BASE_DIR}":"${CONTAINER_DATA_DIR}" \
@@ -122,7 +124,7 @@ singularity exec --nv \
         --num_train_epochs 3 \
         --per_device_train_batch_size 16 \
         --gradient_accumulation_steps 32 \
-        --per_device_eval_batch_size 32 \
+        --per_device_eval_batch_size 8 \
         \
         --learning_rate 5e-5 \
         --lr_scheduler_type "cosine" \
@@ -140,10 +142,10 @@ singularity exec --nv \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_run_name "${NEPTUNE_RUN_NAME}" \
-        --neptune_tags ${NEPTUNE_TAGS}
-        --run_priming_eval \ # Uncomment if you want to run priming eval
-        --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" # Uncomment if using priming eval
-        --priming_eval_steps 100 # Optional: default is eval_steps
+        --neptune_tags ${NEPTUNE_TAGS} \
+        --run_priming_eval \
+        --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
+        --priming_eval_steps 100
 
 # === Job Completion ===
 echo "=== Job Finished: $(date) ==="
