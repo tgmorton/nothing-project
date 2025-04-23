@@ -103,7 +103,7 @@ CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/priming_corpuses" # Example: As
 # Define Neptune args (Project might be set via cred file/env var)
 #NEPTUNE_PROJECT_ARG=""
 # If NEPTUNE_PROJECT is NOT set via env var SINGULARITYENV_NEPTUNE_PROJECT, uncomment and set it here:
-NEPTUNE_PROJECT_ARG="--neptune_project YOUR_ORG/YOUR_PROJECT"
+NEPTUNE_PROJECT_ARG="--neptune_project thmorton/NothingProject"
 NEPTUNE_RUN_NAME="${RUN_OUTPUT_NAME}_$(date +%Y%m%d_%H%M)" # Link run name to output dir name
 NEPTUNE_TAGS="p6000 test1 baseline singularity py39"       # Added space separation for tags
 
