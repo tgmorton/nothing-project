@@ -98,7 +98,7 @@ echo "Starting Python training script inside Singularity container..."
 # These paths MUST match the targets in the -B arguments below AND your data structure
 CONTAINER_TRAIN_DATA_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m"         # Example: Assumes HOST_DATA_BASE_DIR/processed/train_arrow exists
 CONTAINER_VALID_DATA_PATH="${CONTAINER_DATA_DIR}/processed/training_set_10m"    # Example: Assumes HOST_DATA_BASE_DIR/processed/validation_arrow exists
-CONTAINER_PRIMING_PATH="..${CONTAINER_PRIMING_DIR}/priming_corpuses" # Example: Assumes HOST_PRIMING_BASE_DIR/priming_eval_files exists
+CONTAINER_PRIMING_PATH="..${CONTAINER_PRIMING_DIR}/priming-corpuses" # Example: Assumes HOST_PRIMING_BASE_DIR/priming_eval_files exists
 
 # Define Neptune args (Project might be set via cred file/env var)
 #NEPTUNE_PROJECT_ARG=""
