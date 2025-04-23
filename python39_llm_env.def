@@ -1,0 +1,54 @@
+# Filename: python39_llm_env.def
+
+Bootstrap: docker
+From: python:3.9-slim-bookworm  # Use an official Python 3.9 base image (Debian Bookworm based)
+
+%files
+    # Copy your requirements file from your Mac into the container during build
+    requirements.txt /opt/requirements.txt
+
+%environment
+    # Set environment variables INSIDE the container
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export PYTHONUNBUFFERED=1 # Often helpful for Python logging in containers
+
+%post
+    # Commands run inside the container during the build process
+
+    # Update package lists and install common dependencies + git/wget
+    # build-essential needed for compiling some Python package extensions
+    echo "Updating packages and installing build tools..."
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        wget \
+        ca-certificates \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+    # Upgrade pip inside the container's Python 3.9
+    echo "Upgrading pip..."
+    python3 -m pip install --upgrade pip wheel setuptools
+
+    # Install Python packages from requirements.txt
+    # Make sure PyTorch version matches cluster CUDA (e.g., CUDA 11.8)
+    # Check https://pytorch.org/get-started/previous-versions/ for correct command if needed
+    echo "Installing Python requirements from /opt/requirements.txt..."
+    pip install --no-cache-dir -r /opt/requirements.txt
+
+    # Example: If requirements.txt doesn't specify PyTorch+CUDA, install manually:
+    # pip install --no-cache-dir torch==2.1.0+cu118 torchvision==0.16.0+cu118 torchaudio==2.1.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+    # Then install the rest:
+    # pip install --no-cache-dir -r /opt/requirements.txt # (Make sure torch isn't listed again here)
+
+    echo "Build post-install complete."
+
+%labels
+    Author Your Name <your_email@example.com>
+    Version 1.0
+    Python_Version 3.9
+
+# %runscript # Optional: Define default 'apptainer run' command, not needed for 'exec'
+#    echo "Running the Python 3.9 LLM Environment Container"
+#    exec python "$@"
