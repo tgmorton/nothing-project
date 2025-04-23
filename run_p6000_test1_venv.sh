@@ -83,7 +83,7 @@ NEPTUNE_TAGS="p6000" "test1" "baseline" "venv"
 
 # First iteration parameters
 # Note: No explicit Neptune project/token args needed if env vars are set
-python src/train.py \
+python src/train_with_priming.py \
     --model "gpt2" \
     --train_dataset_path "${TRAIN_DATA_PATH}" \
     --validation_dataset_path "${VALID_DATA_PATH}" \
