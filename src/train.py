@@ -645,7 +645,7 @@ def run_priming_evaluation_on_directory(args, model, tokenizer, device, rank, ru
 
 # --- Modified train_epoch (No structural changes needed here, just calls the modified helper) ---
 def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader, eval_dataloader,
-                train_sampler, epoch, global_step, device, rank, world_size, run, tokenizer):
+                train_sampler, epoch, global_step, device, rank, world_size, run, tokenizer, max_train_steps):
     """Runs one training epoch with periodic standard and multi-CSV priming eval."""
     global logger
     import torch; from torch.utils.data import DistributedSampler; from tqdm.auto import tqdm; import math; import sys; import gc
@@ -1277,7 +1277,7 @@ def main():
                     args=args, model=model, optimizer=optimizer, lr_scheduler=lr_scheduler, scaler=scaler,
                     train_dataloader=train_dataloader, eval_dataloader=eval_dataloader, # Pass eval dataloader for periodic eval
                     train_sampler=train_sampler, epoch=epoch, global_step=final_global_step, device=device, rank=rank, world_size=world_size,
-                    run=run, tokenizer=tokenizer,
+                    run=run, tokenizer=tokenizer, max_train_steps=max_train_steps,
                 )
 
                 # Check if max steps were reached within the epoch function
