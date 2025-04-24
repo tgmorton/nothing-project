@@ -122,7 +122,7 @@ singularity exec --nv \
         --output_dir "${CONTAINER_RUN_OUTPUT_DIR}" \
         --eval_max_samples 5000 \
         \
-        --num_train_epochs 3 \
+        --num_train_epochs 5 \
         --per_device_train_batch_size 16 \
         --gradient_accumulation_steps 32 \
         --per_device_eval_batch_size 32 \
@@ -137,16 +137,16 @@ singularity exec --nv \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
         --seed 42 \
         \
-        --logging_steps 10 \
-        --eval_steps 50 \
-        --save_steps 50 \
+        --logging_steps 2 \
+        --eval_steps 5 \
+        --save_steps 5 \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_run_name "${NEPTUNE_RUN_NAME}" \
         --neptune_tags ${NEPTUNE_TAGS} \
         --run_priming_eval \
         --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
-        --priming_eval_steps 50 \
+        --priming_eval_steps 5 \
         --priming_eval_max_samples_per_file 100
 
 # === Job Completion ===
