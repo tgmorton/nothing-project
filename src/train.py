@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 import csv  # For CSV writing
 import os   # For directory creation
+from transformers import AutoConfig, PreTrainedTokenizerFast, PreTrainedTokenizer
 
 # Import ML/data libraries later inside main for structure
 
@@ -333,6 +334,99 @@ def load_model_for_evaluation(model_class, checkpoint_path, base_model_name="gpt
 
     return model, tokenizer, config
 
+def create_small_model_config(
+    base_model_name: str,
+    corpus_size_tag: str,
+    tokenizer: PreTrainedTokenizer,
+    logger: logging.Logger
+):
+    """
+    Creates a small model configuration based on a corpus size tag.
+
+    Initializes from a base model configuration structure (e.g., "gpt2")
+    and then modifies parameters (n_layer, n_head, n_embd) to create
+    a smaller version suitable for training from scratch on limited data.
+
+    Args:
+        base_model_name: Name or path of the base model to load the
+                         config structure from (e.g., "gpt2").
+        corpus_size_tag: A string tag indicating the target corpus size.
+                         Expected values: "10m" or "100m".
+        tokenizer: The loaded tokenizer object. The config's vocab_size
+                   will be set to match the tokenizer's length.
+        logger: Optional logger object for informative messages.
+
+    Returns:
+        A transformers configuration object (e.g., GPT2Config) with
+        parameters modified for a small model.
+
+    Raises:
+        ValueError: If the corpus_size_tag is not recognized.
+    """
+    try:
+        # Load the base configuration structure
+        config = AutoConfig.from_pretrained(base_model_name)
+        if logger:
+            logger.info(f"Loaded base config structure from: {base_model_name}")
+            # Log original key parameters for comparison
+            original_params = {
+                "n_layer": getattr(config, 'n_layer', 'N/A'),
+                "n_head": getattr(config, 'n_head', 'N/A'),
+                "n_embd": getattr(config, 'n_embd', 'N/A'),
+                "vocab_size": getattr(config, 'vocab_size', 'N/A'),
+            }
+            logger.info(f"Original config params (example): {original_params}")
+
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to load base config '{base_model_name}': {e}", exc_info=True)
+        raise  # Re-raise the exception
+
+    tag = corpus_size_tag.lower() # Make tag matching case-insensitive
+
+    if tag == "10m":
+        # Configuration for ~10M word corpus (~10-15M parameters)
+        target_n_layer = 4
+        target_n_head = 4
+        target_n_embd = 256
+        if logger:
+            logger.info("Applying configuration for '10m' corpus size tag.")
+
+    elif tag == "100m":
+        # Configuration for ~100M word corpus (~30-40M parameters)
+        target_n_layer = 6
+        target_n_head = 6
+        target_n_embd = 384
+        if logger:
+            logger.info("Applying configuration for '100m' corpus size tag.")
+
+    else:
+        raise ValueError(f"Unknown corpus_size_tag: '{corpus_size_tag}'. Expected '10m' or '100m'.")
+
+    # Apply the modifications
+    # Check if attributes exist before setting, safer for different model types
+    if hasattr(config, 'n_layer'): config.n_layer = target_n_layer
+    if hasattr(config, 'n_head'): config.n_head = target_n_head
+    if hasattr(config, 'n_embd'): config.n_embd = target_n_embd
+    # Add other parameter adjustments here if needed
+
+    # --- Crucial: Set vocab size from tokenizer ---
+    if hasattr(config, 'vocab_size'):
+        config.vocab_size = len(tokenizer)
+    else:
+        if logger:
+            logger.warning(f"Base config type {type(config)} might not have 'vocab_size'. Check compatibility.")
+
+    # Disable cache for training (standard practice)
+    if hasattr(config, 'use_cache'):
+        config.use_cache = False
+
+    if logger:
+        logger.info(f"Final SMALL config params: n_layer={getattr(config, 'n_layer', 'N/A')}, "
+                    f"n_head={getattr(config, 'n_head', 'N/A')}, n_embd={getattr(config, 'n_embd', 'N/A')}, "
+                    f"vocab_size={getattr(config, 'vocab_size', 'N/A')}")
+
+    return config
 
 def evaluate_standard(args, model, eval_dataloader, device, rank, world_size):
     """Runs standard evaluation (perplexity). Handles DDP aggregation."""
@@ -852,7 +946,6 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader, 
     return global_step # Return the final global step count after the epoch
 
 
-# --- Main Execution ---
 def main():
     """Main function to parse arguments, set up, and run training or evaluation."""
     print("Importing standard libraries...")
@@ -869,6 +962,8 @@ def main():
         from torch.nn.utils import clip_grad_norm_; from torch.nn.parallel import DistributedDataParallel as DDP
         from torch.optim import AdamW; from transformers import GPT2LMHeadModel, AutoConfig, get_scheduler, AutoTokenizer, DataCollatorForLanguageModeling
         from torch.cuda.amp import GradScaler; import torch.amp # Use torch.amp namespace
+        # Needed for type hints in create_small_model_config
+        from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
         try:
              import neptune
              NEPTUNE_AVAILABLE = True
@@ -896,7 +991,7 @@ def main():
 
     # Setup Device and Seed
     device = get_device()
-    # Set seed differently for each rank for potentially different initializations if needed, but synced later
+    # Set seed BEFORE model initialization for reproducible random weights
     set_seed(args.seed + rank)
 
     # Neptune Setup (Rank 0 Only)
@@ -918,10 +1013,16 @@ def main():
     model, tokenizer, config = None, None, None # Initialize
     try:
         if args.evaluate_only:
-            # load_model_for_evaluation handles loading from checkpoint
+            # Evaluation only mode still loads a potentially fine-tuned checkpoint
+            if rank == 0: logger.info(f"EVALUATION ONLY: Loading model from checkpoint: {args.checkpoint_path}")
             model, tokenizer, config = load_model_for_evaluation(GPT2LMHeadModel, args.checkpoint_path, args.model)
-        else: # Training mode (load base model or resume from checkpoint later)
-            if rank == 0: logger.info(f"Loading base model and tokenizer: {args.model}")
+        else:
+            # --- TRAINING MODE: Initialize Small Model From Scratch ---
+            if rank == 0:
+                logger.info(f"TRAINING MODE: Initializing NEW small model (10m config) from scratch.")
+                logger.info(f"Loading tokenizer specified by --model: {args.model}")
+
+            # 1. Load Tokenizer
             tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
             # Ensure pad token exists
             if tokenizer.pad_token is None:
@@ -931,35 +1032,52 @@ def main():
                 else:
                     added_tokens = tokenizer.add_special_tokens({'pad_token': '[PAD]'})
                     if rank == 0: logger.warning(f"Added pad_token '[PAD]' to tokenizer ({added_tokens} new token(s)).")
+                    # Note: If tokens were added AFTER config was created based on original tokenizer length,
+                    # this could cause issues. Best practice is finalize tokenizer THEN create config.
+                    # The create_small_model_config function takes the *final* tokenizer.
 
-            config = AutoConfig.from_pretrained(args.model)
-            config.use_cache = False # Disable cache for training
-            model = GPT2LMHeadModel.from_pretrained(args.model, config=config)
+            # 2. Create the small model configuration FOR 10M CORPUS
+            #    Uses args.model for base architecture structure (e.g., "gpt2")
+            config = create_small_model_config(
+                base_model_name=args.model,
+                corpus_size_tag="10m", # Hardcoded as requested
+                tokenizer=tokenizer,    # Pass the loaded tokenizer
+                logger=logger
+            )
 
-            # Resize embeddings if tokenizer vocab size changed (e.g., added pad token)
-            if len(tokenizer) > model.config.vocab_size:
-                 if rank == 0: logger.info(f"Resizing model token embeddings from {model.config.vocab_size} to {len(tokenizer)}.")
-                 model.resize_token_embeddings(len(tokenizer))
-                 # Ensure model config also reflects the new size
-                 config.vocab_size = model.config.vocab_size
-                 if rank == 0: logger.info(f"Model vocab size updated to: {model.config.vocab_size}")
+            # 3. Initialize the model using the configuration ONLY (random weights)
+            if rank == 0: logger.info("Initializing GPT2LMHeadModel with random weights using the '10m' config...")
+            model = GPT2LMHeadModel(config=config)
+            if rank == 0: logger.info("Model initialized with random weights.")
 
-        # Move model to device
+            # No need to resize embeddings here, as config.vocab_size was set
+            # correctly from the tokenizer *before* model initialization.
+
+        # Move model to device (applies to both eval and train mode)
         model.to(device)
-        if rank == 0: logger.info(f"Model '{args.model}' loaded successfully to device {device} (Rank {rank})")
+        if rank == 0:
+             if args.evaluate_only:
+                 logger.info(f"Loaded EVAL model successfully to device {device} (Rank {rank})")
+             else:
+                 logger.info(f"Initialized NEW TRAIN model successfully on device {device} (Rank {rank})")
 
-        # Wrap model with DDP if distributed
+        # Wrap model with DDP if distributed (applies to both eval and train mode)
         if is_distributed:
+            # find_unused_parameters might be needed if some layers aren't used during forward passes,
+            # which can happen depending on model/data, but start with False.
             model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
             if rank == 0: logger.info(f"Model wrapped with DistributedDataParallel (Rank {rank}).")
 
     except Exception as e:
-        logger.critical(f"Fatal Error: Model or Tokenizer loading failed: {e}", exc_info=True)
-        if run: run["error/message"] = f"Model/Tokenizer load failed: {e}"; run.stop()
+        logger.critical(f"Fatal Error: Model or Tokenizer loading/initialization failed: {e}", exc_info=True)
+        if rank == 0 and run:
+            try: run["error/message"] = f"Model/Tokenizer load failed: {e}"; run.stop()
+            except Exception: pass
         sys.exit(1)
 
     # === Standard Eval Data Loading ===
     eval_dataloader = None
+    # Ensure data_collator uses the final tokenizer
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     if not args.skip_standard_eval:
         try:
@@ -1059,8 +1177,8 @@ def main():
 
 
     # === Training Mode ===
-    else: # if not args.evaluate_only
-        if rank == 0: logger.info(f"***** STARTING TRAINING *****")
+    else: # if not args.evaluate_only (We are in Training Mode now)
+        if rank == 0: logger.info(f"***** STARTING TRAINING FROM SCRATCH (10m config) *****")
 
         # Load Training Data
         train_dataloader, train_sampler = None, None # Initialize
@@ -1069,7 +1187,9 @@ def main():
             if rank == 0: logger.info(f"Loaded training dataset with {len(train_dataloader.dataset):,} samples.")
         except Exception as e:
             logger.critical(f"Fatal Error: Failed to load training data: {e}", exc_info=True)
-            if run: run["error/message"] = f"Training data load failed: {e}"; run.stop()
+            if rank == 0 and run:
+                 try: run["error/message"] = f"Training data load failed: {e}"; run.stop()
+                 except Exception: pass
             sys.exit(1)
 
 
@@ -1077,13 +1197,16 @@ def main():
         if rank == 0: logger.info(f"Setting up Optimizer, Learning Rate Scheduler, and Gradient Scaler (Rank {rank})...")
         # Filter parameters for weight decay application
         no_decay = ["bias", "LayerNorm.weight", "layernorm.weight"] # Common parameters to exclude from weight decay
+        # Ensure model.named_parameters() works correctly with DDP wrapper if present
+        named_params = model.module.named_parameters() if is_distributed else model.named_parameters()
         optimizer_grouped_parameters = [
-            {"params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay) and p.requires_grad], "weight_decay": args.weight_decay},
-            {"params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay) and p.requires_grad], "weight_decay": 0.0},
+            {"params": [p for n, p in named_params if not any(nd in n for nd in no_decay) and p.requires_grad], "weight_decay": args.weight_decay},
+            {"params": [p for n, p in named_params if any(nd in n for nd in no_decay) and p.requires_grad], "weight_decay": 0.0},
         ]
-        num_trainable_params = sum(p.numel() for group in optimizer_grouped_parameters for p in group['params'])
+        # Recalculate param counts based on the *actual* initialized small model
         total_params = sum(p.numel() for p in model.parameters())
-        if rank == 0: logger.info(f"Model Parameters: Total={total_params:,}, Trainable={num_trainable_params:,}")
+        num_trainable_params = sum(p.numel() for group in optimizer_grouped_parameters for p in group['params'])
+        if rank == 0: logger.info(f"Initialized Small Model Parameters: Total={total_params:,}, Trainable={num_trainable_params:,}")
         if num_trainable_params == 0:
              logger.critical("No trainable parameters found. Check model configuration and requires_grad settings.")
              sys.exit(1)
@@ -1121,6 +1244,11 @@ def main():
 
 
         # Resume from Checkpoint if specified
+        # NOTE: If resuming, this will load weights INTO the randomly initialized
+        # structure defined by the '10m' config. This is fine if the checkpoint
+        # was also saved from a model with the exact same '10m' configuration.
+        # If the checkpoint has a *different* architecture, loading will likely fail
+        # or produce warnings about mismatched keys.
         start_epoch, global_step, resumed_from_checkpoint = 0, 0, False
         if args.checkpoint_path:
             state_file = Path(args.checkpoint_path) / "training_state.pt"
@@ -1132,11 +1260,15 @@ def main():
 
                     # Load model state (handle DDP wrapper if necessary)
                     model_to_load = model.module if hasattr(model, 'module') else model
+                    # Use strict=False initially, but monitor warnings. Strict=True enforces exact match.
                     missing_keys, unexpected_keys = model_to_load.load_state_dict(checkpoint_state['model'], strict=False)
                     if rank == 0:
-                        if missing_keys: logger.warning(f"Missing keys when loading model state: {missing_keys}")
-                        if unexpected_keys: logger.warning(f"Unexpected keys when loading model state: {unexpected_keys}")
-                        logger.info("Loaded model state from checkpoint.")
+                        if missing_keys: logger.warning(f"MISSING keys when loading model state (might be ok if resuming partial train): {missing_keys}")
+                        if unexpected_keys: logger.warning(f"UNEXPECTED keys when loading model state (checkpoint might have different architecture/params): {unexpected_keys}")
+                        if not missing_keys and not unexpected_keys:
+                             logger.info("Successfully loaded model state from checkpoint (all keys matched).")
+                        else:
+                             logger.warning("Model state loaded from checkpoint with some mismatches. Verify checkpoint compatibility.")
 
                     # Load optimizer and scheduler states
                     if 'optimizer' in checkpoint_state:
@@ -1167,7 +1299,6 @@ def main():
                     try:
                         if 'torch_rng_state' in checkpoint_state: torch.set_rng_state(checkpoint_state['torch_rng_state'].cpu()) # Load CPU state first
                         if device.type == 'cuda' and 'torch_cuda_rng_state_all' in checkpoint_state and checkpoint_state['torch_cuda_rng_state_all']:
-                            # Ensure list of tensors is loaded correctly
                              torch.cuda.set_rng_state_all(checkpoint_state['torch_cuda_rng_state_all'])
                         if 'numpy_rng_state' in checkpoint_state: np.random.set_state(checkpoint_state['numpy_rng_state'])
                         if 'python_rng_state' in checkpoint_state: random.setstate(checkpoint_state['python_rng_state'])
@@ -1196,13 +1327,15 @@ def main():
 
 
         # Initial Evaluation before training starts (if not resuming)
+        # This will now evaluate the RANDOMLY INITIALIZED model
         if not resumed_from_checkpoint:
-            if rank == 0: logger.info("--- Running Initial Evaluation Before Training ---")
+            if rank == 0: logger.info("--- Running Initial Evaluation on Randomly Initialized Model ---")
             init_std_metrics, init_prime_metrics_summary = {}, {}
 
             # Run initial standard evaluation
             if not args.skip_standard_eval and eval_dataloader:
                  init_std_metrics = evaluate_standard(args, model, eval_dataloader, device, rank, world_size)
+                 if rank==0: logger.info(f"Initial Eval (Random Model) Standard Metrics: {init_std_metrics}") # Expect high loss/perplexity
             elif rank == 0: logger.info("Skipping initial standard evaluation.")
 
             # Run initial priming evaluation
@@ -1210,25 +1343,24 @@ def main():
                  init_prime_metrics_summary = run_priming_evaluation_on_directory(
                      args, model, tokenizer, device, rank, run, global_step=0 # Use step 0 for initial eval
                  )
+                 if rank==0: logger.info(f"Initial Eval (Random Model) Priming Metrics: {init_prime_metrics_summary}") # Expect poor performance
             elif rank == 0: logger.info("Skipping initial priming evaluation.")
 
-            if rank==0:
-                logger.info(f"Initial Evaluation Summary Metrics: Standard={init_std_metrics}, Priming={init_prime_metrics_summary}")
-                # Log initial metrics to Neptune if enabled
-                if run:
-                    try:
-                        if init_std_metrics:
-                             loss_val = init_std_metrics.get("loss", float('nan')); ppl_val = init_std_metrics.get("perplexity", float('nan'))
-                             if math.isfinite(loss_val): run["eval/loss"].append(loss_val, step=0)
-                             if math.isfinite(ppl_val): run["eval/perplexity"].append(ppl_val, step=0)
-                        if init_prime_metrics_summary:
-                            for fname, metrics in init_prime_metrics_summary.items():
-                                log_prefix = f"eval/priming/{fname.replace('.', '_').replace('/','_')}"
-                                for k, v in metrics.items():
-                                    if isinstance(v, (int, float)) and math.isfinite(v):
-                                         run[f"{log_prefix}/{k}"].append(v, step=0)
-                        logger.info("Logged initial evaluation metrics to Neptune.")
-                    except Exception as e: logger.warning(f"Neptune initial eval log failed: {e}")
+            # Log initial metrics to Neptune if enabled
+            if rank==0 and run:
+                try:
+                    if init_std_metrics:
+                         loss_val = init_std_metrics.get("loss", float('nan')); ppl_val = init_std_metrics.get("perplexity", float('nan'))
+                         if math.isfinite(loss_val): run["eval/loss"].append(loss_val, step=0)
+                         if math.isfinite(ppl_val): run["eval/perplexity"].append(ppl_val, step=0)
+                    if init_prime_metrics_summary:
+                        for fname, metrics in init_prime_metrics_summary.items():
+                            log_prefix = f"eval/priming/{fname.replace('.', '_').replace('/','_')}"
+                            for k, v in metrics.items():
+                                if isinstance(v, (int, float)) and math.isfinite(v):
+                                     run[f"{log_prefix}/{k}"].append(v, step=0)
+                    logger.info("Logged initial (random model) evaluation metrics to Neptune.")
+                except Exception as e: logger.warning(f"Neptune initial eval log failed: {e}")
 
             # Ensure model is back in training mode after initial eval
             model.train()
@@ -1238,6 +1370,7 @@ def main():
         # Training Start Logging (Rank 0 Only)
         if rank == 0:
             logger.info("***** Training Configuration *****")
+            logger.info(f"   Model Config: '10m' (Small, From Scratch)") # Note the config used
             logger.info(f"   Total Epochs: {args.num_train_epochs}")
             logger.info(f"   Start Epoch: {start_epoch}")
             logger.info(f"   Start Global Step: {global_step}")
@@ -1295,10 +1428,11 @@ def main():
             # --- Final Saving (Rank 0 Only) ---
             if rank == 0:
                 final_model_path = Path(args.output_dir) / "final_model"
-                logger.info(f"Saving final model, tokenizer, and config to {final_model_path}")
+                logger.info(f"Saving final trained model (small '10m' config), tokenizer, and config to {final_model_path}")
                 try:
                     final_model_path.mkdir(parents=True, exist_ok=True)
                     model_to_save = model.module if hasattr(model, 'module') else model
+                    # Save the trained weights AND the specific small config used
                     model_to_save.save_pretrained(final_model_path)
                     tokenizer.save_pretrained(final_model_path)
                     # Save the final training args used
@@ -1383,8 +1517,17 @@ def main():
             if is_distributed:
                 torch.distributed.destroy_process_group()
             if rank == 0 and run:
-                 run.stop()
+                 # Ensure run stops even on error
+                 try: run.stop()
+                 except Exception as ne_stop: logger.error(f"Neptune stop failed: {ne_stop}")
             logger.info(f"Training script finished (Rank {rank}).")
+
+
+if __name__ == "__main__":
+    # Make sure logging is set up before the logger object is used globally
+    # Basic setup here in case setup_logging isn't called before main logger used
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+    main()
 
 
 if __name__ == "__main__":
