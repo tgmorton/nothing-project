@@ -120,6 +120,7 @@ singularity exec --nv \
         --train_dataset_path "${CONTAINER_TRAIN_DATA_PATH}" \
         --validation_dataset_path "${CONTAINER_VALID_DATA_PATH}" \
         --output_dir "${CONTAINER_RUN_OUTPUT_DIR}" \
+        --eval_max_samples 5000 \
         \
         --num_train_epochs 3 \
         --per_device_train_batch_size 16 \
@@ -145,7 +146,8 @@ singularity exec --nv \
         --neptune_tags ${NEPTUNE_TAGS} \
         --run_priming_eval \
         --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
-        --priming_eval_steps 50
+        --priming_eval_steps 50 \
+        --priming_eval_max_samples_per_file 100
 
 # === Job Completion ===
 echo "=== Job Finished: $(date) ==="
