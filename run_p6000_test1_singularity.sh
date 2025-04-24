@@ -128,7 +128,7 @@ singularity exec --nv \
         \
         --learning_rate 5e-5 \
         --lr_scheduler_type "cosine" \
-        --num_warmup_steps 1000 \
+        --num_warmup_steps 100 \
         --weight_decay 0.01 \
         --max_grad_norm 1.0 \
         \
@@ -136,16 +136,16 @@ singularity exec --nv \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
         --seed 42 \
         \
-        --logging_steps 100 \
-        --eval_steps 500 \
-        --save_steps 500 \
+        --logging_steps 10 \
+        --eval_steps 50 \
+        --save_steps 50 \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_run_name "${NEPTUNE_RUN_NAME}" \
         --neptune_tags ${NEPTUNE_TAGS} \
         --run_priming_eval \
         --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
-        --priming_eval_steps 100
+        --priming_eval_steps 50
 
 # === Job Completion ===
 echo "=== Job Finished: $(date) ==="
