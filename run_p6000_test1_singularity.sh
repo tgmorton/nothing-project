@@ -146,7 +146,7 @@ singularity exec --nv \
         --neptune_tags ${NEPTUNE_TAGS} \
         --run_priming_eval \
         --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
-        --priming_eval_steps 50 \
+        --priming_eval_steps 100 \
         --priming_eval_max_samples_per_file 0
 
 # === Job Completion ===
