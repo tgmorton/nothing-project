@@ -123,9 +123,9 @@ singularity exec --nv \
         --eval_max_samples 5000 \
         \
         --num_train_epochs 20 \
-        --per_device_train_batch_size 64 \
+        --per_device_train_batch_size 16 \
         --gradient_accumulation_steps 8 \
-        --per_device_eval_batch_size 64 \
+        --per_device_eval_batch_size 32 \
         \
         --learning_rate 3e-4 \
         --lr_scheduler_type "cosine" \
