@@ -122,12 +122,12 @@ singularity exec --nv \
         --output_dir "${CONTAINER_RUN_OUTPUT_DIR}" \
         --eval_max_samples 5000 \
         \
-        --num_train_epochs 5 \
-        --per_device_train_batch_size 16 \
-        --gradient_accumulation_steps 32 \
-        --per_device_eval_batch_size 32 \
+        --num_train_epochs 20 \
+        --per_device_train_batch_size 64 \
+        --gradient_accumulation_steps 8 \
+        --per_device_eval_batch_size 64 \
         \
-        --learning_rate 5e-5 \
+        --learning_rate 3e-4 \
         --lr_scheduler_type "cosine" \
         --num_warmup_steps 100 \
         --weight_decay 0.01 \
@@ -137,17 +137,17 @@ singularity exec --nv \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
         --seed 42 \
         \
-        --logging_steps 2 \
-        --eval_steps 5 \
-        --save_steps 5 \
+        --logging_steps 50 \
+        --eval_steps 100 \
+        --save_steps 100 \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_run_name "${NEPTUNE_RUN_NAME}" \
         --neptune_tags ${NEPTUNE_TAGS} \
         --run_priming_eval \
         --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
-        --priming_eval_steps 5 \
-        --priming_eval_max_samples_per_file 100
+        --priming_eval_steps 50 \
+        --priming_eval_max_samples_per_file 0
 
 # === Job Completion ===
 echo "=== Job Finished: $(date) ==="
