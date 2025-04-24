@@ -3,10 +3,11 @@ message("Loading libraries...")
 suppressPackageStartupMessages(library(readr))
 suppressPackageStartupMessages(library(dplyr))
 suppressPackageStartupMessages(library(tidyr))
-suppressPackageStartupMessages(library(ggplot2)) # Still needed for line plots
+suppressPackageStartupMessages(library(ggplot2)) # Needed for line plots and potentially pheatmap themes
 suppressPackageStartupMessages(library(scales))
 suppressPackageStartupMessages(library(RColorBrewer))
 suppressPackageStartupMessages(library(pheatmap)) # Load pheatmap
+suppressPackageStartupMessages(library(grid))     # Needed for saving pheatmap grobs
 
 message("Libraries loaded.")
 
@@ -39,23 +40,33 @@ message("Data read complete (", nrow(df_raw), " rows). Time taken: ", format(rea
 message("Starting pre-processing...")
 df_processed <- df_raw %>%
   select(eval_num, corpus_file, target_structure, pe) %>%
-  filter(!is.na(eval_num) & !is.na(corpus_file) & !is.na(target_structure)) %>%
+  filter(!is.na(eval_num) & !is.na(corpus_file) & !is.na(target_structure) & !is.na(pe)) %>% # Filter NA pe early
   mutate(
     target_structure = sub("^t", "", target_structure),
-    eval_num = as.numeric(eval_num) # Ensure eval_num is numeric for sorting columns
+    eval_num = as.numeric(eval_num) # Ensure eval_num is numeric for sorting/plotting
   )
 message("Pre-processing complete.")
-rm(df_raw); #gc()
+rm(df_raw); #gc() # Optional: call gc() garbage collect if memory is tight
 
-# --- 4. Summarize Data ---
+# --- 4. Summarize Data (Modified to include SEM) ---
 message("Starting data summarization...")
 summary_start_time <- Sys.time()
 summary_df <- df_processed %>%
   group_by(eval_num, corpus_file, target_structure) %>%
-  summarise(mean_pe = mean(pe, na.rm = TRUE), .groups = 'drop') # Keep only needed columns
-  # Note: SEM/SD not needed for heatmap itself
+  summarise(
+    mean_pe = mean(pe, na.rm = TRUE),
+    sd_pe = sd(pe, na.rm = TRUE),
+    n_pe = n(),                      # Count observations in each group
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    sem_pe = sd_pe / sqrt(n_pe),
+    # Handle cases where n=1 (sd is NA) -> SEM should be 0 or NA (choose 0 for plotting)
+    sem_pe = ifelse(n_pe <= 1 | is.na(sd_pe), 0, sem_pe)
+  ) %>%
+  select(-sd_pe, -n_pe) # Drop intermediate sd and n if not needed later
 
-# Add check for missing mean_pe values if needed
+# Check for missing mean_pe values (should be less likely now with early filtering)
 summary_df <- summary_df %>% filter(!is.na(mean_pe))
 
 summary_end_time <- Sys.time()
@@ -72,50 +83,55 @@ summary_other <- summary_df %>%
 message("Data split into 'Exp' (", nrow(summary_exp), " rows) and 'Other' (", nrow(summary_other), " rows).")
 rm(summary_df); #gc()
 
-# --- 6. Plotting Function - Line Plots ---
-# (Keep the previous ggplot2 line plot function here)
+# --- 6. Plotting Function - Line Plots (Revised - Assumes SEM exists) ---
 plot_lines <- function(summary_data_subset_line, title_suffix) {
-    # Add SEM calculation if not done globally
-    if (!"sem_pe" %in% colnames(summary_data_subset_line)) {
-        warning("SEM not pre-calculated for line plot subset, calculating now (less efficient).")
-        summary_data_subset_line <- summary_data_subset_line %>%
-         # Need n for SEM - requires going back or recalculating n
-         # This highlights why keeping summary_df longer might be needed
-         # Or pass df_processed to calculate n within groups
-         # For now, assume SEM calculation needs to be done differently or kept in summary_df
-         # Add dummy SEM for now to make code run, REVISE THIS if running lines plots
-         mutate(sem_pe = 0)
-
-    }
 
   if (nrow(summary_data_subset_line) == 0) {
     message("Skipping Line Plot ", title_suffix, ": No data.")
     return(NULL)
   }
+  # Ensure eval_num is treated numerically for the axis
+  summary_data_subset_line <- summary_data_subset_line %>% arrange(eval_num)
+
   message("Creating Line Plot ", title_suffix)
   num_facets <- n_distinct(summary_data_subset_line$corpus_file)
+
+  # Determine if SEM values are meaningful (not all zero or NA)
+  show_ribbon <- any(summary_data_subset_line$sem_pe > 0, na.rm = TRUE)
+
   p <- ggplot(summary_data_subset_line,
               aes(x = eval_num, y = mean_pe,
                   color = target_structure, fill = target_structure, linetype = target_structure)) +
     geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.5) +
-    geom_line(linewidth = 0.7) +
-    geom_ribbon(aes(ymin = mean_pe - sem_pe, ymax = mean_pe + sem_pe), alpha = 0.25, color = NA) +
-    facet_wrap(~ corpus_file, scales = "free_y", ncol = 1) +
+    geom_line(linewidth = 0.7)
+
+  # Only add geom_ribbon if there's meaningful SEM data
+  if (show_ribbon) {
+      p <- p + geom_ribbon(aes(ymin = mean_pe - sem_pe, ymax = mean_pe + sem_pe), alpha = 0.25, color = NA)
+  } else {
+      message("Note: No meaningful SEM values (>0) found for line plot ", title_suffix, ". Ribbons omitted.")
+  }
+
+  p <- p +
+    facet_wrap(~ corpus_file, scales = "free_y", ncol = 1) + # Use free_y for better visibility per corpus
     scale_color_brewer(palette = "Set1", name = "Structure") +
     scale_fill_brewer(palette = "Set1", name = "Structure") +
     scale_linetype_discrete(name = "Structure") +
+    # Ensure x-axis treats eval_num as continuous, but show reasonable breaks
+    scale_x_continuous(breaks = pretty_breaks()) +
     labs(
       title = paste("Longitudinal Priming Effect (Mean PE +/- SEM)", title_suffix),
       x = "Evaluation Number", y = "Mean Priming Effect (PE)" ) +
     theme_minimal(base_size = 11) +
     theme( strip.text = element_text(face = "bold", size = 9), legend.position = "top",
-      panel.spacing.y = unit(0.5, "lines"), axis.text.x = element_text(size=9),
+      panel.spacing.y = unit(0.5, "lines"), axis.text.x = element_text(size=9, angle = 0, hjust=0.5), # Keep axis text horizontal
       axis.text.y = element_text(size=9) )
   return(p)
 }
 
 
 # --- 7. Plotting Function - Heatmaps (Using pheatmap - Revised Breaks) ---
+# (Keep the existing plot_heatmap_pheatmap function as it was - it ignores the extra SEM column)
 plot_heatmap_pheatmap <- function(summary_data_subset, title_suffix) {
    if (nrow(summary_data_subset) == 0) {
     message("Skipping pheatmap ", title_suffix, ": No data.")
@@ -128,6 +144,7 @@ plot_heatmap_pheatmap <- function(summary_data_subset, title_suffix) {
      mutate(target_structure = factor(target_structure, levels = sort(unique(target_structure)))) %>%
      arrange(corpus_file, target_structure, eval_num) %>%
      mutate(row_label = interaction(corpus_file, target_structure, sep = ":", lex.order = TRUE)) %>%
+     # Select only needed columns for pivot, robustness against extra columns like sem_pe
      select(row_label, eval_num, mean_pe) %>%
      pivot_wider(names_from = eval_num, values_from = mean_pe)
 
@@ -141,25 +158,16 @@ plot_heatmap_pheatmap <- function(summary_data_subset, title_suffix) {
 
    # --- Define Colors and **Linear** Breaks ---
    max_abs_pe <- max(abs(heatmap_matrix), na.rm = TRUE)
-   # Handle case where all data is NA or matrix is empty after NA removal
-   if (!is.finite(max_abs_pe)) {
-       message("Cannot determine finite max_abs_pe for heatmap ", title_suffix, ". Skipping.")
+   if (!is.finite(max_abs_pe) || nrow(heatmap_matrix) == 0) {
+       message("Cannot determine finite max_abs_pe or matrix is empty for heatmap ", title_suffix, ". Skipping.")
        return(NULL)
    }
-   # Handle case where max abs PE is effectively zero
-   if (max_abs_pe < 1e-9) max_abs_pe <- 1e-9 # Use a tiny range if data is all zero
+   if (max_abs_pe < 1e-9) max_abs_pe <- 1e-9
 
-
-   # Define number of color steps (odd number for distinct center)
    n_colors <- 101
-   # Create color palette (e.g., Blue-White-Red)
    my_colors <- colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(n_colors)
-
-   # Create a linear sequence of breaks: n_colors + 1 points
-   # Spanning slightly beyond the max_abs_pe ensures all values are included
    my_breaks <- seq(-max_abs_pe * 1.01, max_abs_pe * 1.01, length.out = n_colors + 1)
 
-   # --- Sanity check breaks ---
    if(any(duplicated(my_breaks))) {
        stop("Fatal Error: Duplicate breaks generated even with linear sequence.")
    }
@@ -171,7 +179,6 @@ plot_heatmap_pheatmap <- function(summary_data_subset, title_suffix) {
    fontsize_row <- max(4, min(8, round(200 / nrow(heatmap_matrix))))
    fontsize_col <- max(4, min(8, round(200 / ncol(heatmap_matrix))))
 
-   # Use tryCatch to handle potential plotting errors gracefully
    p <- tryCatch({
        pheatmap(
            heatmap_matrix,
@@ -179,28 +186,22 @@ plot_heatmap_pheatmap <- function(summary_data_subset, title_suffix) {
            breaks = my_breaks,
            cluster_rows = FALSE,
            cluster_cols = FALSE,
-           border_color = "grey85", #"grey85", # Set to NA for no borders
+           border_color = "grey85",
            na_col = "grey50",
            main = paste("Priming Effect (Mean PE) Heatmap", title_suffix),
            fontsize = 8,
            fontsize_row = fontsize_row,
            fontsize_col = fontsize_col,
            angle_col = "45",
-           silent = TRUE # Set to FALSE for immediate plotting, TRUE if saving manually
-          # cellwidth = 10, # Avoid forcing cell size unless absolutely necessary
-          # cellheight = 10
+           silent = TRUE # Keep silent TRUE as we draw manually later
        )
    }, error = function(e) {
        message("Error during pheatmap generation for ", title_suffix, ": ", e$message)
-       return(NULL) # Return NULL on error
+       return(NULL)
    })
 
    return(p) # Return the heatmap object (grob) or NULL
 }
-
-# --- Rest of the script ---
-# (Make sure the summary step provides the necessary data if running line plots)
-# (Update the saving/printing logic for pheatmap objects)
 
 # --- 8. Generate and Display/Save Plots ---
 output_dir <- "plots"
@@ -209,17 +210,30 @@ if (!dir.exists(output_dir)) dir.create(output_dir)
 # --- Plots for 'Exp' Corpora ---
 message("--- Generating plots for 'Exp' corpora ---")
 exp_plot_start_time <- Sys.time()
-# line_plot_exp <- plot_lines(summary_exp, "for 'Exp' Corpora") # Needs SEM
-# if (!is.null(line_plot_exp)) { print(line_plot_exp) }
 
+# Generate Line Plot
+line_plot_exp <- plot_lines(summary_exp, "for 'Exp' Corpora")
+if (!is.null(line_plot_exp)) {
+    # Save using ggsave for ggplot objects
+    line_filename_exp <- file.path(output_dir, "lineplot_exp.png")
+    ggsave(line_filename_exp, plot = line_plot_exp, width = 8, height = max(4, 2 * n_distinct(summary_exp$corpus_file)), units = "in", dpi = 150)
+    message("Exp line plot generated and saved to ", line_filename_exp)
+    # Optional: print to console if running interactively
+    # print(line_plot_exp)
+} else {
+    message("Exp line plot generation failed or skipped.")
+}
+
+# Generate Heatmap
 heatmap_exp_grob <- plot_heatmap_pheatmap(summary_exp, "for 'Exp' Corpora")
 if (!is.null(heatmap_exp_grob)) {
-    # Save using grid graphics functions
-    png(file.path(output_dir, "pheatmap_exp.png"), width = 2000, height = max(800, 5 * nrow(summary_exp)), res = 150) # Adjust multiplier/res
+    # Save using grid graphics functions for pheatmap objects (grobs)
+    heatmap_filename_exp <- file.path(output_dir, "pheatmap_exp.png")
+    png(heatmap_filename_exp, width = 2000, height = max(800, 15 * nrow(heatmap_exp_grob$gtable$grobs[[1]]$data)), res = 150) # Adjust height based on rows in matrix
     grid::grid.newpage()
     grid::grid.draw(heatmap_exp_grob$gtable) # Draw the grob
     dev.off()
-    message("Exp pheatmap generated and saved.")
+    message("Exp pheatmap generated and saved to ", heatmap_filename_exp)
 } else {
     message("Exp pheatmap generation failed or skipped.")
 }
@@ -230,16 +244,27 @@ message("'Exp' plots generated. Time taken: ", format(exp_plot_end_time - exp_pl
 # --- Plots for 'Other' Corpora ---
 message("--- Generating plots for Non-'Exp' corpora ---")
 other_plot_start_time <- Sys.time()
-# line_plot_other <- plot_lines(summary_other, "for Non-'Exp' Corpora") # Needs SEM
-# if (!is.null(line_plot_other)) { print(line_plot_other) }
 
+# Generate Line Plot
+line_plot_other <- plot_lines(summary_other, "for Non-'Exp' Corpora")
+if (!is.null(line_plot_other)) {
+    line_filename_other <- file.path(output_dir, "lineplot_other.png")
+    ggsave(line_filename_other, plot = line_plot_other, width = 8, height = max(4, 2 * n_distinct(summary_other$corpus_file)), units = "in", dpi = 150)
+    message("Other line plot generated and saved to ", line_filename_other)
+    # print(line_plot_other)
+} else {
+    message("Other line plot generation failed or skipped.")
+}
+
+# Generate Heatmap
 heatmap_other_grob <- plot_heatmap_pheatmap(summary_other, "for Non-'Exp' Corpora")
 if (!is.null(heatmap_other_grob)) {
-    png(file.path(output_dir, "pheatmap_other.png"), width = 2000, height = max(800, 5 * nrow(summary_other)), res = 150) # Adjust multiplier/res
+    heatmap_filename_other <- file.path(output_dir, "pheatmap_other.png")
+    png(heatmap_filename_other, width = 2000, height = max(800, 15 * nrow(heatmap_other_grob$gtable$grobs[[1]]$data)), res = 150) # Adjust height based on rows in matrix
     grid::grid.newpage()
     grid::grid.draw(heatmap_other_grob$gtable)
     dev.off()
-    message("Other pheatmap generated and saved.")
+    message("Other pheatmap generated and saved to ", heatmap_filename_other)
 } else {
     message("Other pheatmap generation failed or skipped.")
 }
