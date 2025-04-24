@@ -433,11 +433,14 @@ def evaluate_standard(args, model, eval_dataloader, device, rank, world_size):
     return metrics
 
 
-# --- Helper Function for Multi-CSV Priming Eval (MODIFIED FOR CSV LOGGING) ---
+# FILE: train.py (Replace the existing function with this one)
+
+# --- Helper Function for Multi-CSV Priming Eval (MODIFIED FOR CSV LOGGING & NEPTUNE FIX) ---
 def run_priming_evaluation_on_directory(args, model, tokenizer, device, rank, run, global_step):
     """
     Finds CSVs, creates dataloaders, runs eval, aggregates summary results,
-    and appends raw per-item results to a persistent CSV file (on Rank 0).
+    appends raw per-item results to a persistent CSV file (on Rank 0),
+    and logs aggregated summary metrics to Neptune *once* per call (on Rank 0).
     Returns a dictionary of summary metrics per file.
     """
 
@@ -447,36 +450,29 @@ def run_priming_evaluation_on_directory(args, model, tokenizer, device, rank, ru
     import numpy as np
     import math
     import torch  # For distributed check
+    import os     # For makedirs
+    import csv    # For CSV writing
 
     if not args.run_priming_eval or not args.priming_eval_dir_path:
-        # If rank 0, log that it's skipped due to config
         if rank == 0: logger.info("Skipping priming evaluation (not enabled or path not provided).")
         return {}
-    if not args.output_dir: # Need output dir for saving CSV
+    if not args.output_dir:
         if rank == 0: logger.error("Output directory (--output_dir) required for saving priming results CSV but not provided. Skipping priming CSV log.")
-        # Can still proceed with calculation and Neptune logging, just skip CSV
-        # Fall through, but csv_output_path will be None below
     else:
-        # Ensure output dir exists or can be created (only on rank 0)
         if rank == 0:
             try:
                 Path(args.output_dir).mkdir(parents=True, exist_ok=True)
             except OSError as e:
                 logger.error(f"Failed to create output directory {args.output_dir}: {e}. Skipping priming CSV log.")
-                # Disable CSV logging by setting output_dir to None effectively for CSV part
-                args.output_dir = None # Modify local copy of args? Risky. Better to handle via csv_output_path.
+                args.output_dir = None # Effectively disable CSV logging below
 
-
-
-    # Import priming libs here to keep them contained and fail gracefully if missing
+    # Import priming libs here
     try:
         from priming_evaluation.data_loader import create_priming_dataloader
-        # Assumes evaluator.py has the modified run_native_priming_eval returning (summary, raw)
-        from priming_evaluation.evaluator import run_native_priming_eval
+        from priming_evaluation.evaluator import run_native_priming_eval # Assumes modified version returning (summary, raw)
     except ImportError as e:
         if rank == 0: logger.error(f"Failed to import priming evaluation library: {e}. Cannot run priming eval.")
         return {"error": "Priming library import failed."}
-
 
     priming_dir = Path(args.priming_eval_dir_path)
     if not priming_dir.is_dir():
@@ -486,67 +482,57 @@ def run_priming_evaluation_on_directory(args, model, tokenizer, device, rank, ru
     csv_files = sorted(list(priming_dir.glob('*.csv')))
     if not csv_files:
         if rank == 0: logger.warning(f"No *.csv files found in priming directory: {priming_dir}")
-        return {} # Return empty dict, not an error
-
+        return {}
 
     # --- CSV Setup (Rank 0 Only) ---
     csv_output_dir = None
     csv_output_path = None
-    if rank == 0 and args.output_dir: # Check if output_dir is usable
+    if rank == 0 and args.output_dir:
         try:
             csv_output_dir = Path(args.output_dir) / "prime_measures"
-            os.makedirs(csv_output_dir, exist_ok=True) # Create directory if needed
+            os.makedirs(csv_output_dir, exist_ok=True)
             csv_output_path = csv_output_dir / "results.csv"
             logger.info(f"Raw priming results CSV will be appended to: {csv_output_path}")
         except OSError as e:
             logger.error(f"Could not create directory for priming CSV log: {csv_output_dir}. Error: {e}")
-            csv_output_path = None # Disable CSV logging if dir creation fails
+            csv_output_path = None
 
+    all_priming_summary_results = {} # Store the aggregated metrics per file for return value
+    neptune_logs_for_this_step = {} # *** NEPTUNE FIX: Dict to store logs for this step ***
 
-    all_priming_summary_results = {} # Store the aggregated metrics per file
     if rank == 0: logger.info(f"Found {len(csv_files)} CSVs for priming eval in {priming_dir}.")
     is_distributed = torch.distributed.is_initialized()
-    original_mode = model.training # Store original mode
+    original_mode = model.training
 
     # --- CSV File Handling (Open once, write iteratively, close at end) ---
     csv_writer = None
     csv_file_handle = None
-    if rank == 0 and csv_output_path: # Only attempt if path setup was successful
+    if rank == 0 and csv_output_path:
         try:
-            # Open file in append mode ('a'), create if doesn't exist
-            # Use newline='' to prevent extra blank rows in CSV
             csv_file_handle = open(csv_output_path, 'a', newline='', encoding='utf-8')
             csv_writer = csv.writer(csv_file_handle)
-            # Write header only if the file is newly created (or empty)
-            # Check position: 0 means empty file or just opened
             if csv_file_handle.tell() == 0:
-                header = [
-                    "eval_num", "corpus_file", "target_structure",
-                    "item_index", "pe", "logp_con", "logp_incon"
-                ]
+                header = ["eval_num", "corpus_file", "target_structure", "item_index", "pe", "logp_con", "logp_incon"]
                 csv_writer.writerow(header)
                 logger.info("Wrote header to new/empty priming results CSV.")
         except IOError as e:
             logger.error(f"Failed to open or write header to CSV {csv_output_path}: {e}")
-            csv_writer = None # Disable writing if open failed
+            csv_writer = None
             if csv_file_handle:
-                try: csv_file_handle.close() # Ensure file is closed if opened
-                except Exception: pass # Ignore errors during cleanup close
+                try: csv_file_handle.close()
+                except Exception: pass
             csv_file_handle = None
 
-
     # --- Process each CSV file ---
-    model.eval() # Ensure model is in eval mode for all files
+    model.eval() # Ensure model is in eval mode
     for csv_path in csv_files:
         csv_filename = csv_path.name
         if rank == 0: logger.info(f"--- Running Priming Eval for: {csv_filename} (Step {global_step}) ---")
 
         priming_dataloader_single = None
-        # Sync before processing each file to ensure consistent state if needed (e.g., RNG)
         if is_distributed: torch.distributed.barrier()
 
         try:
-            # Create dataloader for the single CSV file
             priming_dataloader_single = create_priming_dataloader(
                 csv_path=str(csv_path),
                 tokenizer=tokenizer,
@@ -554,96 +540,90 @@ def run_priming_evaluation_on_directory(args, model, tokenizer, device, rank, ru
                 delimiter=args.priming_delimiter,
                 num_workers=args.num_workers,
                 pin_memory=True,
-                max_samples=args.priming_eval_max_samples_per_file, # Pass sampling arg
-                seed=args.seed # Pass seed for reproducible sampling
+                max_samples=args.priming_eval_max_samples_per_file,
+                seed=args.seed
             )
         except Exception as e:
             if rank == 0: logger.error(f"Dataloader creation failed for {csv_filename}: {e}", exc_info=True)
             all_priming_summary_results[csv_filename] = {"error": f"Dataloader creation failed: {e}"}
-            continue # Skip to next file
+            continue
 
         if priming_dataloader_single is None or len(priming_dataloader_single.dataset) == 0:
              if rank == 0: logger.warning(f"Dataloader for {csv_filename} is None or empty. Skipping.")
              all_priming_summary_results[csv_filename] = {"error": "Dataloader None or empty."}
-             continue # Skip to next file
-
+             continue
 
         # --- Run the evaluation ---
         try:
-            # run_native_priming_eval returns (summary_dict, raw_results_dict)
-            # It handles internal looping, aggregation, and AMP usage
-            # Pass use_amp flag down
             priming_summary_metrics, priming_raw_results = run_native_priming_eval(
                 model=model,
                 priming_dataloader=priming_dataloader_single,
                 device=device,
-                tokenizer=tokenizer, # Pass tokenizer for potential debug inside
-                use_amp=args.use_amp # Pass AMP setting from args
+                tokenizer=tokenizer,
+                use_amp=args.use_amp
             )
 
-            # Store summary results (for JSON output / function return)
+            # Store summary results for return value
             all_priming_summary_results[csv_filename] = priming_summary_metrics
             if rank == 0: logger.info(f"Priming Summary Metrics for {csv_filename}: {priming_summary_metrics}")
 
-            # --- Log Summary to Neptune (Rank 0 Only) ---
+            # --- *** NEPTUNE FIX: Aggregate metrics for Neptune logging *** ---
             if rank == 0 and run: # Check if Neptune run object exists
                  log_prefix = f"eval/priming/{csv_filename.replace('.', '_').replace('/','_')}" # Sanitize name
-                 try:
-                     metrics_to_log = {k: v for k, v in priming_summary_metrics.items() if isinstance(v, (int, float)) and math.isfinite(v)}
-                     if metrics_to_log:
-                         # Use append for step-based logging
-                         for k, v in metrics_to_log.items():
-                             run[f"{log_prefix}/{k}"].append(v, step=global_step)
-                         logger.info(f"Logged {len(metrics_to_log)} summary priming metrics for {csv_filename} to Neptune @ step {global_step}.")
-                     else:
-                        logger.info(f"No finite summary metrics to log to Neptune for {csv_filename}.")
-
-                 except Exception as e:
-                     logger.warning(f"Neptune logging failed for {csv_filename} summary metrics: {e}")
+                 metrics_to_log = {k: v for k, v in priming_summary_metrics.items() if isinstance(v, (int, float)) and math.isfinite(v)}
+                 if metrics_to_log:
+                     for k, v in metrics_to_log.items():
+                         # Store with full neptune path as key
+                         neptune_logs_for_this_step[f"{log_prefix}/{k}"] = v
+                 # --- *** NEPTUNE FIX: Logging moved after the loop *** ---
 
             # --- Write Raw Results to CSV (Rank 0 Only) ---
-            if rank == 0 and csv_writer and priming_raw_results: # Check writer exists and results are not empty
+            # (This part remains unchanged)
+            if rank == 0 and csv_writer and priming_raw_results:
                 logger.info(f"Appending {sum(len(v) for v in priming_raw_results.values()):,} raw priming results to CSV for {csv_filename}...")
                 items_written_count = 0
                 try:
                     for target_structure, results_list in priming_raw_results.items():
                         for idx, item_data in enumerate(results_list):
-                            # Check if item_data is the expected dictionary format
                             if isinstance(item_data, dict):
-                                # Extract values safely using .get() with NaN default
                                 pe_val = item_data.get('pe', float('nan'))
                                 logp_con_val = item_data.get('logp_con', float('nan'))
                                 logp_incon_val = item_data.get('logp_incon', float('nan'))
-
                                 row = [
-                                    global_step,              # eval_num (current global step)
-                                    csv_filename,             # corpus_file name
-                                    target_structure,         # target_structure string
-                                    idx,                      # item_index (0-based index within this structure/file list)
-                                    f"{pe_val:.6f}" if not math.isnan(pe_val) else 'NaN',             # pe formatted
-                                    f"{logp_con_val:.6f}" if not math.isnan(logp_con_val) else 'NaN', # logp_con formatted
-                                    f"{logp_incon_val:.6f}" if not math.isnan(logp_incon_val) else 'NaN'# logp_incon formatted
+                                    global_step, csv_filename, target_structure, idx,
+                                    f"{pe_val:.6f}" if not math.isnan(pe_val) else 'NaN',
+                                    f"{logp_con_val:.6f}" if not math.isnan(logp_con_val) else 'NaN',
+                                    f"{logp_incon_val:.6f}" if not math.isnan(logp_incon_val) else 'NaN'
                                 ]
                                 csv_writer.writerow(row)
                                 items_written_count += 1
                             else:
                                 logger.warning(f"Skipping invalid item data format in raw results for {target_structure} index {idx} in {csv_filename}: Type={type(item_data)}")
-                    # Flush after writing all rows for a file to ensure data is written
                     if csv_file_handle: csv_file_handle.flush()
                     logger.info(f"Finished appending {items_written_count} rows to CSV for {csv_filename}.")
-
                 except Exception as e:
                      logger.error(f"Error occurred while writing raw results to CSV for {csv_filename}: {e}", exc_info=True)
-                     # Attempt to continue to next file, but CSV might be corrupted
 
         except Exception as e:
-            # Catch errors during the run_native_priming_eval call itself
             if rank == 0: logger.error(f"Priming evaluation run failed for {csv_filename}: {e}", exc_info=True)
             all_priming_summary_results[csv_filename] = {"error": f"Evaluation run failed: {e}"}
         finally:
-            # Explicitly delete dataloader to free memory, especially important in loops
             del priming_dataloader_single
-            import gc; gc.collect() # Optional: Force garbage collection
+            import gc; gc.collect()
+
+    # --- *** NEPTUNE FIX: Log aggregated metrics AFTER the loop *** ---
+    if rank == 0 and run and neptune_logs_for_this_step:
+        logger.info(f"Logging {len(neptune_logs_for_this_step)} aggregated priming summary metrics to Neptune @ step {global_step}...")
+        try:
+            for metric_path, value in neptune_logs_for_this_step.items():
+                 run[metric_path].append(value, step=global_step)
+            logger.info(f"Finished logging aggregated metrics to Neptune for step {global_step}.")
+        except Exception as e:
+             logger.warning(f"Neptune logging failed for aggregated priming summary metrics at step {global_step}: {e}")
+    elif rank == 0 and run:
+        logger.info(f"No priming summary metrics were aggregated for Neptune logging at step {global_step}.")
+    # --- *** END NEPTUNE FIX *** ---
+
 
     # --- Close CSV File (Rank 0 Only) ---
     if rank == 0 and csv_file_handle:
@@ -653,18 +633,13 @@ def run_priming_evaluation_on_directory(args, model, tokenizer, device, rank, ru
         except Exception as e:
             logger.error(f"Error closing CSV file {csv_output_path}: {e}")
 
-
-    if is_distributed: torch.distributed.barrier() # Sync after all files are done
-    # Restore original model mode (evaluator might have left it in eval)
-    if original_mode:
-        model.train()
-    else:
-        model.eval()
+    if is_distributed: torch.distributed.barrier()
+    # Restore original model mode
+    if original_mode: model.train()
+    else: model.eval()
 
     if rank == 0: logger.info("--- Finished All Priming Evaluations for this step ---")
 
-    # Return only the summary results dictionary (per file)
-    # Raw results were saved to CSV by rank 0 if enabled/possible
     return all_priming_summary_results
 
 
