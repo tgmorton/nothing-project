@@ -120,7 +120,7 @@ singularity exec --nv \
         --num_warmup_steps 100 \
         --weight_decay 0.01 \
         --max_grad_norm 1.0 \
-        --model_size "100m" \ # Changed
+        --model_size "100m" \
         \
         --use_amp \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
