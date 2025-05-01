@@ -666,7 +666,7 @@ def main():
     if rank == 0: logger.info(f"Estimated total training steps: {max_train_steps:,}")
     eff_warmup = min(args.num_warmup_steps, max_train_steps) if max_train_steps > 0 else 0; args.num_warmup_steps = eff_warmup
     lr_scheduler = get_scheduler(name=args.lr_scheduler_type, optimizer=optimizer, num_warmup_steps=args.num_warmup_steps, num_training_steps=max_train_steps)
-    scaler_enabled = args.use_amp and device.type == 'cuda'; scaler = torch.amp.GradScaler(device_type=device.type, enabled=scaler_enabled)
+    scaler_enabled = args.use_amp and device.type == 'cuda'; scaler = torch.amp.GradScaler(enabled=scaler_enabled)
     if args.use_amp and not scaler_enabled and rank == 0: logger.warning("AMP requested but CUDA unavailable.")
     if rank == 0: logger.info(f"AMP enabled: {scaler.is_enabled()}.")
 
