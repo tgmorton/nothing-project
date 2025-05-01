@@ -68,7 +68,7 @@ def parse_args():
     parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Max gradient norm for clipping.")
     parser.add_argument("--lr_scheduler_type", type=str, default="linear", help="LR scheduler type.", choices=["linear", "cosine", "constant", "constant_with_warmup"])
     parser.add_argument("--num_warmup_steps", type=int, default=0, help="LR warmup steps.")
-    parser.add_argument("--model_size", type=int, default="10m", help="Model size tag for small model config (e.g., '10m' or '100m').")
+    parser.add_argument("--model_size", type=str, default="10m", help="Model size tag for small model config (e.g., '10m' or '100m').")
 
     # === Hardware & Precision ===
     parser.add_argument("--use_amp", action="store_true", help="Enable AMP training.")
