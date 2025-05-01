@@ -5,7 +5,7 @@
 #SBATCH --partition=general_gpu_a5000   # <<< Target A5000 partition
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=12          # <<< Increased CPUs
+#SBATCH --cpus-per-task=8          # <<< Increased CPUs
 #SBATCH --mem=24G              # <<< Increased RAM
 #SBATCH --gres=gpu:a5000:1       # <<< Explicitly request 1 A5000
 #SBATCH --time=24:00:00          # <<< Increased time slightly for local evals
