@@ -598,7 +598,7 @@ def main():
             else:
                 added = tokenizer.add_special_tokens({'pad_token': '[PAD]'})
                 logger.warning(f"Added pad_token ({added} new).")
-        config = create_small_model_config(base_model_name=args.model, corpus_size_tag=args.model-size, tokenizer=tokenizer, logger=logger)
+        config = create_small_model_config(base_model_name=args.model, corpus_size_tag=args.model_size, tokenizer=tokenizer, logger=logger)
         model = GPT2LMHeadModel(config=config)
         logger.info("Model initialized with random weights.")
         model.to(device); logger.info(f"Initialized model on {device} (Rank {rank})")
