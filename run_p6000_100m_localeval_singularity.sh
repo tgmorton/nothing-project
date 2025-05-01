@@ -106,15 +106,14 @@ singularity exec --nv \
     "${HOST_SIF_PATH}" \
     python3 "${CONTAINER_WORKSPACE}/src/train.py" \
         --model "gpt2" \
-        # IMPORTANT: Update dataset paths below
         --train_dataset_path "${CONTAINER_DATA_DIR}/processed/training_set_100m" \
         --validation_dataset_path "${CONTAINER_DATA_DIR}/processed/test_set_10m" \
         --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
         --output_dir "${CONTAINER_RUN_OUTPUT_DIR}" \
         \
         --num_train_epochs 20 \
-        --per_device_train_batch_size 4 \ # Reduced
-        --gradient_accumulation_steps 32 \ # Increased
+        --per_device_train_batch_size 4 \
+        --gradient_accumulation_steps 32 \
         \
         --learning_rate 3e-4 \
         --lr_scheduler_type "cosine" \
@@ -127,14 +126,14 @@ singularity exec --nv \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
         --seed 42 \
         \
-        --logging_steps 200 \ # Increased
-        --eval_steps 400 \    # Increased
-        --save_steps 400 \    # Increased
-        --priming_eval_steps 400 \ # Increased
+        --logging_steps 200 \
+        --eval_steps 400 \
+        --save_steps 400 \
+        --priming_eval_steps 400 \
         \
         ${NEPTUNE_PROJECT_ARG} \
-        --neptune_run_name "${NEPTUNE_RUN_NAME}" \ # Name updated via RUN_OUTPUT_NAME variable
-        --neptune_tags ${NEPTUNE_TAGS} \ # Tags updated via NEPTUNE_TAGS variable
+        --neptune_run_name "${NEPTUNE_RUN_NAME}" \
+        --neptune_tags ${NEPTUNE_TAGS} \
         \
         --local_eval \
         --evaluate_script_path "${CONTAINER_EVAL_SCRIPT_PATH}" \
