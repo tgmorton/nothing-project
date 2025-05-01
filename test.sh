@@ -1,7 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=minimal_a5k_test
 #SBATCH --partition=general_gpu_a5000
-#SBATCH --gres=gpu:1   # Or try gpu:1 if the above test suggested it
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1    # Minimal CPU
