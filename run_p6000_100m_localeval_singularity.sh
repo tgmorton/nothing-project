@@ -5,7 +5,7 @@
 #SBATCH --partition=general_gpu_p6000
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=12
 #SBATCH --mem=24G
 #SBATCH --gres=gpu:1
 #SBATCH --time=168:00:00
