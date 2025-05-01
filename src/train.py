@@ -1,4 +1,4 @@
-# src/train.py (MODIFIED FOR DECOUPLED EVALUATION + LOCAL EVAL OPTION)
+# src/train.py
 
 # === Imports ===
 import logging
@@ -29,7 +29,7 @@ from transformers import (
     get_scheduler,
     DataCollatorForLanguageModeling
 )
-from torch.cuda.amp import GradScaler
+# Use torch.amp directly for GradScaler and autocast
 import torch.amp
 from datasets import load_from_disk
 from torch.nn.utils import clip_grad_norm_
@@ -60,7 +60,11 @@ def parse_args():
     parser.add_argument("--checkpoint_path", type=str, default=None, help="Path to checkpoint to RESUME training from.")
 
     # === Training Hyperparameters ===
-    parser.add_argument("--num_train_epochs", type=int, default=3, help="Total training epochs.")
+    parser.add_argument("--num_train_epochs", type=int, default=3, help="Total training epochs (used if max_steps <= 0).")
+    # --- ADDED max_steps ARGUMENT ---
+    parser.add_argument("--max_steps", type=int, default=-1,
+                        help="Maximum number of optimizer steps to train for. Overrides num_train_epochs if > 0.")
+    # --- END ADDITION ---
     parser.add_argument("--per_device_train_batch_size", type=int, default=8, help="Train batch size per device.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Steps for gradient accumulation.")
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="Peak learning rate.")
@@ -83,9 +87,9 @@ def parse_args():
 
     # === Evaluation Triggering Control ===
     parser.add_argument("--eval_steps", type=int, default=500, help="Trigger evaluation every X steps.")
-    parser.add_argument("--local_eval", action="store_true", help="Run evaluation script locally as subprocess instead of submitting Slurm job.") # <<< NEW FLAG
+    parser.add_argument("--local_eval", action="store_true", help="Run evaluation script locally as subprocess instead of submitting Slurm job.")
     parser.add_argument("--submit_eval_script_path", type=str, default=None, help="Path to the Slurm script for submitting eval jobs (required if not --local_eval).")
-    parser.add_argument("--evaluate_script_path", type=str, default="src/evaluate.py", help="Path to evaluate.py (required if --local_eval).") # <<< NEW ARG
+    parser.add_argument("--evaluate_script_path", type=str, default="src/evaluate.py", help="Path to evaluate.py (required if --local_eval).")
     parser.add_argument("--validation_dataset_path", type=str, default=None, help="Path to validation Arrow dataset (passed to eval job/script if standard eval enabled).")
     parser.add_argument("--priming_eval_dir_path", type=str, default=None, help="Directory containing priming CSVs (passed to eval job/script if priming eval enabled).")
     parser.add_argument("--trigger_standard_eval", action="store_true", default=False, help="Trigger/run standard evaluation.")
@@ -200,7 +204,10 @@ def load_training_data(args, is_distributed, rank, world_size, data_collator):
         ds = load_from_disk(args.train_dataset_path); logger.info(f"Train size: {len(ds):,}")
         sampler = DistributedSampler(ds, num_replicas=world_size, rank=rank, shuffle=True, seed=args.seed) if is_distributed else RandomSampler(ds)
         if rank == 0: logger.info(f"Using {'DistributedSampler' if is_distributed else 'RandomSampler'} for training.")
-        train_dl = DataLoader(ds, sampler=sampler, batch_size=args.per_device_train_batch_size, num_workers=args.num_workers, pin_memory=True, collate_fn=data_collator)
+        train_dl = DataLoader(ds, sampler=sampler, batch_size=args.per_device_train_batch_size,
+                              num_workers=args.num_workers, pin_memory=True, collate_fn=data_collator,
+                              # Use persistent workers if available and num_workers > 0
+                              persistent_workers=(True if args.num_workers > 0 else False))
         if rank == 0: logger.info("Train DataLoader created.")
         train_sampler = sampler # Return the sampler for set_epoch
     except Exception as e:
@@ -334,32 +341,18 @@ def run_or_trigger_evaluation(args, checkpoint_dir: Path, global_step: int, rank
 
         eval_start_time = time.time()
         try:
-            # --- MODIFY THIS LINE ---
-            # Original: result = subprocess.run(eval_args_list, capture_output=True, text=True, check=True, env=os.environ.copy())
-            # Modified: Remove capture_output=True and text=True
+            # Run evaluation synchronously, allow output to stream to main log
             result = subprocess.run(eval_args_list, check=True, env=os.environ.copy())
-            # --- END MODIFICATION ---
-
-            # Since output is no longer captured, log completion differently
             logger.info(
                 f"Local evaluation process completed successfully in {time.time() - eval_start_time:.2f} seconds.")
-
-
         except FileNotFoundError:
             logger.error(f"Error: Python executable '{python_executable}' or script '{eval_script_path}' not found.")
         except subprocess.CalledProcessError as e:
-            # Error handling remains similar, but you won't have e.stdout/e.stderr if capture_output was false
             logger.error(f"Error running local evaluation script for step {global_step}. Return code: {e.returncode}")
-            # You might want to log that the output should have appeared above in the console
             logger.error("Check console output above for potential error messages from evaluate.py.")
-            # --- REMOVE or COMMENT OUT these lines ---
-            # logger.error(f"--- evaluate.py stdout ---\n{e.stdout}")
-            # logger.error(f"--- evaluate.py stderr ---\n{e.stderr}")
-            # --- END REMOVAL ---
         except Exception as e:
             logger.error(f"An unexpected error occurred during local evaluation for step {global_step}: {e}",
                          exc_info=True)
-
 
     else:
         # --- Submit Slurm Job ---
@@ -416,15 +409,18 @@ def run_or_trigger_evaluation(args, checkpoint_dir: Path, global_step: int, rank
 
 
 def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
-                train_sampler, epoch, global_step, device, rank, world_size, run, tokenizer, max_train_steps):
+                train_sampler, epoch, global_step, device, rank, world_size, run, tokenizer,
+                max_train_steps): # <<< Added max_train_steps argument here
     """
     Runs one training epoch.
     Saves checkpoints and triggers/runs evaluation periodically.
+    Stops early if max_train_steps is reached.
     """
     global logger
     import torch; from torch.utils.data import DistributedSampler; from tqdm.auto import tqdm; import math; import sys; import gc
     from torch.nn.utils import clip_grad_norm_
-    from torch.cuda.amp import autocast
+    # Use torch.amp directly for autocast
+    from torch.amp import autocast
 
     model.train()
     is_distributed = train_sampler is not None and isinstance(train_sampler, DistributedSampler)
@@ -449,7 +445,8 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
             continue
         try:
             amp_enabled = args.use_amp and device.type == 'cuda'
-            with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
+            # --- Use torch.amp.autocast with device_type ---
+            with autocast(device_type=device.type, enabled=amp_enabled):
                 outputs = model(**batch_on_device)
                 loss = outputs.loss
             if loss is None:
@@ -463,9 +460,16 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
             scaled_loss = loss / args.gradient_accumulation_steps
             current_loss_value = loss.item()
         except Exception as e:
-            logger.error(f"Forward pass error: {e}", exc_info=True)
+            # Catch potential BackendCompilerFailed errors if compile is re-enabled
+            if "BackendCompilerFailed" in str(e):
+                 logger.error(f"Forward pass failed due to BackendCompilerFailed (likely incompatible GPU/compile settings): {e}")
+                 logger.error("Recommendation: Disable torch.compile() in the main function.")
+                 # Optionally exit or raise to stop the whole script
+                 # sys.exit(1)
+            else:
+                 logger.error(f"Forward pass error: {e}", exc_info=True)
             optimizer.zero_grad(set_to_none=True)
-            continue
+            continue # Skip the rest of the step processing
 
         # --- Backward Pass ---
         if amp_enabled:
@@ -490,10 +494,10 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
                     optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
-                global_step += 1
+                global_step += 1 # Increment global_step only after successful optimizer step
             except Exception as e:
                 logger.error(f"Optimizer step error: {e}", exc_info=True)
-                optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad(set_to_none=True) # Ensure gradients are cleared even on error
 
             # --- Logging Step ---
             if rank == 0 and global_step % args.logging_steps == 0 and steps_since_logging > 0:
@@ -512,19 +516,25 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
 
             # --- Save Checkpoint Step ---
             if global_step > 0 and global_step % args.save_steps == 0:
+                # Only save if max_steps is not set OR if current step is less than max_steps
+                # Or maybe always save when save_steps is hit, regardless of max_steps? User decision.
+                # Current logic: Save whenever save_steps is hit.
                 if is_distributed: torch.distributed.barrier()
                 save_checkpoint(args, model, optimizer, lr_scheduler, scaler, epoch, global_step, rank, tokenizer)
                 if is_distributed: torch.distributed.barrier()
 
             # --- Evaluation Trigger Step ---
+            # Only trigger if max_steps is not set OR if current step is less than max_steps
+            # Or maybe always trigger when eval_steps is hit? Let's keep it simple: trigger if conditions met.
             time_for_std_eval = args.trigger_standard_eval and global_step > 0 and global_step % args.eval_steps == 0
             time_for_prime_eval = args.trigger_priming_eval and global_step > 0 and global_step % args.priming_eval_steps == 0
             trigger_eval_now = time_for_std_eval or time_for_prime_eval
 
             if trigger_eval_now:
                  checkpoint_dir = Path(args.output_dir) / f"checkpoint-{global_step}"
+                 # Ensure checkpoint exists before triggering eval
                  if rank == 0 and not checkpoint_dir.is_dir():
-                     logger.warning(f"Checkpoint {checkpoint_dir} needed for eval not found. Saving now.")
+                     logger.warning(f"Checkpoint {checkpoint_dir} needed for eval trigger not found. Saving now (might be redundant if save_steps==eval_steps).")
                      if is_distributed: torch.distributed.barrier() # Sync before potential save
                      save_checkpoint(args, model, optimizer, lr_scheduler, scaler, epoch, global_step, rank, tokenizer)
                      if is_distributed: torch.distributed.barrier() # Sync after potential save
@@ -534,18 +544,23 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
                  elif rank == 0:
                      logger.error(f"Failed to find or save checkpoint {checkpoint_dir}. Cannot run/trigger evaluation.")
 
-                 # Cleanup after eval trigger (especially local)
-                 gc.collect()
-                 if torch.cuda.is_available(): torch.cuda.empty_cache()
+                 # Optional cleanup after eval trigger
+                 # gc.collect()
+                 # if torch.cuda.is_available(): torch.cuda.empty_cache()
 
+            # --- Check Max Steps AFTER optimizer step and increments ---
+            if max_train_steps > 0 and global_step >= max_train_steps:
+                if rank == 0: logger.info(f"Max steps ({max_train_steps}) reached at step {global_step}. Finishing epoch {epoch+1}.")
+                # Update progress bar one last time to show completion if desired
+                progress_bar.update(args.gradient_accumulation_steps - ((step + 1) % args.gradient_accumulation_steps)) # Ensure bar reaches end of current micro-batch cycle if needed
+                progress_bar.set_postfix({"loss": f"{last_logged_loss:.4f}", "step": global_step, "status": "Max steps reached"})
+                return global_step # Return current global_step to signal completion
 
-        # Update progress bar and check max steps
+        # Update progress bar per micro-batch step
         if rank == 0: progress_bar.set_postfix({"loss": f"{last_logged_loss:.4f}", "step": global_step})
-        if max_train_steps > 0 and global_step >= max_train_steps:
-             if rank == 0: logger.info(f"Max steps ({max_train_steps}) reached. Finishing epoch {epoch+1}.")
-             break # Exit inner loop
 
-    # End of Epoch
+
+    # End of Epoch normally (if max_steps not reached in inner loop)
     if rank == 0: progress_bar.close(); logger.info(f"--- Epoch {epoch+1} Finished (Reached Step {global_step}) ---")
     return global_step
 
@@ -561,7 +576,7 @@ def main():
     global logger
     logger = logging.getLogger(__name__)
 
-    if rank == 0: logger.info(f"***** Starting Training Script (Decoupled Eval w/ Local Option) *****")
+    if rank == 0: logger.info(f"***** Starting Training Script (Decoupled Eval w/ Local Option + Max Steps) *****")
     if rank == 0: logger.info(f"Running with Arguments: {vars(args)}")
 
     # Setup Device and Seed
@@ -573,43 +588,31 @@ def main():
     if rank == 0 and NEPTUNE_AVAILABLE and args.neptune_project:
         try:
             run = neptune.init_run(project=args.neptune_project, name=args.neptune_run_name, tags=args.neptune_tags)
+            # --- Process args for Neptune logging ---
             args_log = {}
-            logger.info("Processing arguments for Neptune logging...")  # Optional: Add logging
+            logger.info("Processing arguments for Neptune logging...")
             for k, v in vars(args).items():
-                if isinstance(v, Path):
-                    args_log[k] = str(v)
-                    # logger.debug(f"  Converted Path '{k}' to str") # Optional debug
-                elif isinstance(v, list):
-                    # Join list elements into a comma-separated string
-                    args_log[k] = ','.join(map(str, v)) if v else "None"  # Handle empty/None list
-                    # logger.debug(f"  Converted list '{k}' to str: {args_log[k]}") # Optional debug
-                elif v is None:
-                    args_log[k] = "None"  # Convert NoneType to string "None"
-                    # logger.debug(f"  Converted NoneType '{k}' to str 'None'") # Optional debug
-                else:
-                    # Keep other supported types (int, float, bool, str) as is
-                    args_log[k] = v
-                    # logger.debug(f"  Kept original type for '{k}': {type(v)}") # Optional debug
-
+                if isinstance(v, Path): args_log[k] = str(v)
+                elif isinstance(v, list): args_log[k] = ','.join(map(str, v)) if v else "None"
+                elif v is None: args_log[k] = "None"
+                else: args_log[k] = v
             try:
-                run["parameters"] = args_log  # Log the processed dictionary
-                logger.info("Successfully logged processed parameters to Neptune.")  # Optional confirm
+                run["parameters"] = args_log
+                logger.info("Successfully logged processed parameters to Neptune.")
             except Exception as neptune_log_e:
                 logger.error(f"Failed to log processed parameters to Neptune: {neptune_log_e}")
+            # --- End processing args ---
 
-            run["parameters"] = args_log
             logger.info(f"Neptune logging enabled. Run URL: {run.get_url()}")
-            # --- ADD THIS LINE ---
-            run.sync()
+            run.sync() # Ensure run object is synchronized
             logger.info("Neptune run object synchronized.")
-            # --- END ADDITION ---
         except Exception as e:
             logger.error(f"Neptune init failed: {e}. Disabled.")
             run = None
     elif rank == 0:
         logger.info("Neptune logging disabled.")
 
-    # === Model & Tokenizer Loading (For Training - Unchanged) ===
+    # === Model & Tokenizer Loading ===
     model, tokenizer, config = None, None, None
     try:
         if rank == 0: logger.info(f"Init NEW small model ({args.model_size} config) from scratch. Tokenizer: {args.model}")
@@ -625,13 +628,17 @@ def main():
         model = GPT2LMHeadModel(config=config)
         logger.info("Model initialized with random weights.")
         model.to(device); logger.info(f"Initialized model on {device} (Rank {rank})")
+
+        # --- torch.compile() section (COMMENTED OUT due to P6000 incompatibility) ---
         # try:
         #     logger.info("Attempting torch.compile()...")
         #     # Start with default mode, can explore 'reduce-overhead' or 'max-autotune' later
-        #     model = torch.compile(model, mode="reduce-overhead")
+        #     # model = torch.compile(model) # Default mode
+        #     # model = torch.compile(model, mode="reduce-overhead") # Alternative mode
         #     logger.info("torch.compile() successful.")
         # except Exception as compile_e:
         #     logger.warning(f"torch.compile() failed: {compile_e}. Proceeding without compilation.")
+        # --- End torch.compile() section ---
 
         if is_distributed:
             model = DDP(model, device_ids=[local_rank], output_device=local_rank)
@@ -640,7 +647,7 @@ def main():
         logger.critical(f"Model/Tokenizer init failed: {e}", exc_info=True)
         sys.exit(1)
 
-    # === Training Data Loading (Unchanged) ===
+    # === Training Data Loading ===
     train_dataloader, train_sampler = None, None
     try:
         data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -650,7 +657,7 @@ def main():
         logger.critical(f"Train data load failed: {e}", exc_info=True)
         sys.exit(1)
 
-    # === Optimizer, Scheduler, Scaler Setup (Unchanged) ===
+    # === Optimizer, Scheduler, Scaler Setup ===
     if rank == 0: logger.info(f"Setting up Optimizer, LR Scheduler, Grad Scaler...")
     no_decay = ["bias", "LayerNorm.weight", "layernorm.weight"]
     named_params = model.module.named_parameters() if is_distributed else model.named_parameters()
@@ -661,16 +668,42 @@ def main():
     if rank == 0: logger.info(f"Model Params: Total={total_params:,}, Trainable={num_trainable:,}")
     if num_trainable == 0: logger.critical("No trainable params."); sys.exit(1)
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader)/args.gradient_accumulation_steps) if len(train_dataloader)>0 else 0
-    max_train_steps = args.num_train_epochs * num_update_steps_per_epoch if num_update_steps_per_epoch > 0 else 0
-    if rank == 0: logger.info(f"Estimated total training steps: {max_train_steps:,}")
-    eff_warmup = min(args.num_warmup_steps, max_train_steps) if max_train_steps > 0 else 0; args.num_warmup_steps = eff_warmup
-    lr_scheduler = get_scheduler(name=args.lr_scheduler_type, optimizer=optimizer, num_warmup_steps=args.num_warmup_steps, num_training_steps=max_train_steps)
-    scaler_enabled = args.use_amp and device.type == 'cuda'; scaler = torch.amp.GradScaler(enabled=scaler_enabled)
+
+    # --- MODIFIED max_train_steps calculation ---
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps) if len(train_dataloader) > 0 else 0
+    max_train_steps_from_epochs = args.num_train_epochs * num_update_steps_per_epoch if num_update_steps_per_epoch > 0 else 0
+
+    if args.max_steps > 0:
+        max_train_steps = args.max_steps
+        if rank == 0: logger.info(f"Limiting training to {max_train_steps:,} total optimizer steps (--max_steps).")
+    else:
+        max_train_steps = max_train_steps_from_epochs
+        if rank == 0: logger.info(f"Calculated training steps based on epochs: {max_train_steps:,}")
+
+    if max_train_steps <= 0 and rank == 0:
+        logger.warning("Max training steps is zero or negative. Training will not proceed beyond setup.")
+    # --- END MODIFICATION ---
+
+    # --- Update LR Scheduler setup ---
+    eff_warmup = min(args.num_warmup_steps, max_train_steps) if max_train_steps > 0 else 0
+    if rank == 0: logger.info(f"Effective warmup steps: {eff_warmup}")
+
+    lr_scheduler = get_scheduler(
+        name=args.lr_scheduler_type,
+        optimizer=optimizer,
+        num_warmup_steps=eff_warmup,
+        num_training_steps=max_train_steps # <<< Use the final max_train_steps
+    )
+    # --- End Update ---
+
+    # --- Use torch.amp.GradScaler without device_type ---
+    scaler_enabled = args.use_amp and device.type == 'cuda'
+    scaler = torch.amp.GradScaler(enabled=scaler_enabled)
+    # --- End Update ---
     if args.use_amp and not scaler_enabled and rank == 0: logger.warning("AMP requested but CUDA unavailable.")
     if rank == 0: logger.info(f"AMP enabled: {scaler.is_enabled()}.")
 
-    # === Resume from Checkpoint Logic (Unchanged) ===
+    # === Resume from Checkpoint Logic ===
     start_epoch, global_step, resumed_from_checkpoint = 0, 0, False
     if args.checkpoint_path:
         state_file = Path(args.checkpoint_path) / "training_state.pt"
@@ -685,7 +718,18 @@ def main():
                 if 'optimizer' in ckpt: optimizer.load_state_dict(ckpt['optimizer'])
                 if 'lr_scheduler' in ckpt: lr_scheduler.load_state_dict(ckpt['lr_scheduler'])
                 if 'scaler' in ckpt and ckpt['scaler'] and scaler.is_enabled(): scaler.load_state_dict(ckpt['scaler'])
-                start_epoch=ckpt.get('epoch',0)+1; global_step=ckpt.get('global_step',0); resumed_from_checkpoint=True
+                # Ensure epoch/step calculation considers max_steps if resuming
+                start_epoch = ckpt.get('epoch', 0)
+                global_step = ckpt.get('global_step', 0)
+                # If resuming and already past max_steps, don't start an extra epoch
+                if max_train_steps > 0 and global_step >= max_train_steps:
+                    start_epoch = args.num_train_epochs # Effectively prevent loop from running
+                    if rank == 0: logger.info(f"Resuming from step {global_step}, which meets or exceeds max_steps ({max_train_steps}). Training will not continue.")
+                else:
+                    start_epoch += 1 # Start next epoch normally if not past max_steps
+                    if rank == 0: logger.info(f"Resuming training from Epoch {start_epoch}, Step {global_step}")
+
+                resumed_from_checkpoint = True
                 try: # Restore RNG
                     if 'torch_rng_state' in ckpt: torch.set_rng_state(ckpt['torch_rng_state'].cpu())
                     if device.type == 'cuda' and 'torch_cuda_rng_state_all' in ckpt and ckpt['torch_cuda_rng_state_all']: torch.cuda.set_rng_state_all(ckpt['torch_cuda_rng_state_all'])
@@ -694,8 +738,9 @@ def main():
                     if rank == 0: logger.info("Restored RNG states.")
                 except Exception as rng_e:
                     logger.warning(f"Could not restore RNG: {rng_e}")
-                del ckpt; gc.collect(); torch.cuda.empty_cache()
-                if rank==0: logger.info(f"Resume from Epoch {start_epoch}, Step {global_step}")
+                del ckpt; gc.collect();
+                if torch.cuda.is_available(): torch.cuda.empty_cache()
+
                 if is_distributed: torch.distributed.barrier()
             except Exception as e:
                 logger.error(f"Ckpt load failed: {e}", exc_info=True)
@@ -703,54 +748,82 @@ def main():
         else: logger.warning(f"Ckpt path specified, but state file missing. Start from scratch.")
     else: logger.info("No checkpoint specified, starting from scratch.")
 
-    # Training Start Logging (Rank 0 Only - Minor Update)
+    # Training Start Logging (Rank 0 Only)
     if rank == 0:
         logger.info("***** Training Configuration *****")
         logger.info(f"   Evaluation Mode: {'Local Subprocess' if args.local_eval else 'Slurm Job Submission'}")
-        # ... (Log other params) ...
+        logger.info(f"   Max Steps Target: {max_train_steps if max_train_steps > 0 else 'Based on Epochs'}")
+        # ... (Log other important params) ...
 
-    # === Training Loop (Unchanged) ===
+    # === Training Loop ===
     if is_distributed: torch.distributed.barrier()
     training_start_time = time.time()
-    final_global_step = global_step
+    final_global_step = global_step # Initialize with potentially resumed step count
     try:
+        # Use epoch loop structure, but rely on max_steps check inside train_epoch
+        # and pre-loop check to handle termination correctly.
         for epoch in range(start_epoch, args.num_train_epochs):
-            if rank == 0: logger.info(f"--- Starting Epoch {epoch + 1}/{args.num_train_epochs} ---")
+            # Check if max_steps already reached before starting epoch
+            if max_train_steps > 0 and final_global_step >= max_train_steps:
+                if rank == 0: logger.info(f"Max steps ({max_train_steps}) reached before starting epoch {epoch + 1}. Stopping train loop.")
+                break # Exit epoch loop immediately
+
+            if rank == 0: logger.info(f"--- Starting Epoch {epoch + 1}/{args.num_train_epochs} (Target Steps: {max_train_steps if max_train_steps > 0 else 'N/A'}) ---")
             model.train()
-            final_global_step = train_epoch(
+            final_global_step = train_epoch( # final_global_step gets updated here
                 args=args, model=model, optimizer=optimizer, lr_scheduler=lr_scheduler, scaler=scaler,
                 train_dataloader=train_dataloader, train_sampler=train_sampler,
                 epoch=epoch, global_step=final_global_step, device=device, rank=rank, world_size=world_size,
-                run=run, tokenizer=tokenizer, max_train_steps=max_train_steps,
+                run=run, tokenizer=tokenizer,
+                max_train_steps=max_train_steps, # Pass the final max_train_steps value
             )
+            # Check again after epoch finishes in case max_steps was reached
             if max_train_steps > 0 and final_global_step >= max_train_steps:
-                 if rank == 0: logger.info(f"Max steps ({max_train_steps}) reached. Stop train.")
+                 # Log message handled inside train_epoch or the pre-loop check
                  break # Exit epoch loop
+
         training_duration = time.time() - training_start_time
         if rank == 0: logger.info(f"***** Training Finished *****"); logger.info(f"Total Time: {training_duration:.2f}s"); logger.info(f"Final Step: {final_global_step}")
 
-        # Final Saving (Rank 0 Only - Unchanged)
+        # Final Saving (Rank 0 Only)
         if rank == 0:
             final_model_path = Path(args.output_dir) / "final_model"
-            logger.info(f"Saving final model to {final_model_path}")
+            logger.info(f"Saving final model state at step {final_global_step} to {final_model_path}")
             try:
                 final_model_path.mkdir(parents=True, exist_ok=True)
                 model_to_save = model.module if hasattr(model, 'module') else model
+                # Save using save_checkpoint logic to include optimizer etc. for potential future resuming?
+                # Or just save model/tokenizer? Let's use save_checkpoint for consistency.
+                save_checkpoint(args, model, optimizer, lr_scheduler, scaler, epoch, final_global_step, rank, tokenizer)
+                logger.info(f"Final state saved successfully using save_checkpoint logic to checkpoint-{final_global_step}.")
+
+                # Additionally save model/tokenizer/args to a specific 'final_model' dir if desired
+                logger.info(f"Saving final model weights/tokenizer to separate dir: {final_model_path}")
                 model_to_save.save_pretrained(final_model_path)
                 tokenizer.save_pretrained(final_model_path)
                 args_dict_final = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
                 with open(final_model_path / "training_args.json", "w") as f: json.dump(args_dict_final, f, indent=4)
-                logger.info(f"Final model saved successfully.")
+                logger.info(f"Final model weights/tokenizer saved to {final_model_path}")
+
+
                 if run: # Upload to Neptune
                     try:
-                        run["final_model"].upload(str(final_model_path))
+                        # Upload the final checkpoint directory content
+                        final_ckpt_dir = Path(args.output_dir) / f"checkpoint-{final_global_step}"
+                        if final_ckpt_dir.is_dir():
+                             run[f"final_checkpoint_step_{final_global_step}"].upload_files(str(final_ckpt_dir))
+                             logger.info(f"Uploaded final checkpoint-{final_global_step} folder to Neptune.")
+                        # Optionally upload the specific final_model dir too
+                        run["final_model_dir"].upload_files(str(final_model_path))
+
+
                         run["training/duration_seconds"] = training_duration
                         run["training/final_global_step"] = final_global_step
-                        logger.info("Uploaded final model to Neptune.")
+                        logger.info("Logged final training stats to Neptune.")
                     except Exception as e:
-                        logger.warning(f"Neptune final upload failed: {e}")
+                        logger.warning(f"Neptune final upload/log failed: {e}")
             except Exception as e:
-                logger.error(f"Failed to save final model: {e}", exc_info=True)
+                logger.error(f"Failed to save final model/state: {e}", exc_info=True)
 
     except KeyboardInterrupt:
         logger.warning("Training interrupted.")
@@ -760,7 +833,9 @@ def main():
         if is_distributed: torch.distributed.destroy_process_group()
         if rank == 0 and run:
             try:
+                logger.info("Stopping Neptune run...")
                 run.stop()
+                logger.info("Neptune run stopped.")
             except Exception as ne:
                 logger.error(f"Neptune stop failed: {ne}")
         logger.info(f"Training script finished (Rank {rank}).")
@@ -771,9 +846,10 @@ def _fallback_tqdm(iterable, *args, **kwargs): return iterable
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+    # Set tqdm import within main script scope if possible
     try:
         from tqdm.auto import tqdm
     except ImportError:
         print("Warning: tqdm not installed.")
-        tqdm = _fallback_tqdm
+        tqdm = _fallback_tqdm # Assign fallback if tqdm not found
     main()
