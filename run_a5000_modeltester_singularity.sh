@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12          # <<< Increased CPUs
-#SBATCH --mem=64G              # <<< Increased RAM
+#SBATCH --mem=48G              # <<< Increased RAM
 #SBATCH --gres=gpu:a5000:1       # <<< Explicitly request 1 A5000
 #SBATCH --time=24:00:00          # <<< Increased time slightly for local evals
 #SBATCH --output=logs/%x_%j.out
