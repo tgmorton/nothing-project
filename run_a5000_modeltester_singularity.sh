@@ -6,11 +6,12 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8          # <<< Increased CPUs
-#SBATCH --mem=24G              # <<< Increased RAM
-#SBATCH --gres=gpu:1      # <<< Explicitly request 1 A5000
+#SBATCH --mem=64G              # <<< Increased RAM
 #SBATCH --time=24:00:00          # <<< Increased time slightly for local evals
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
+#SBATCH --mail-type=BEGIN,END
+#SBATCH --mail-user=thmorton@ucsd.edu
 
 # Exit on error
 set -e
