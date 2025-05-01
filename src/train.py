@@ -602,7 +602,17 @@ def main():
         model = GPT2LMHeadModel(config=config)
         logger.info("Model initialized with random weights.")
         model.to(device); logger.info(f"Initialized model on {device} (Rank {rank})")
-        if is_distributed: model = DDP(model, device_ids=[local_rank], output_device=local_rank); logger.info("Model wrapped with DDP.")
+        try:
+            logger.info("Attempting torch.compile()...")
+            # Start with default mode, can explore 'reduce-overhead' or 'max-autotune' later
+            model = torch.compile(model)
+            logger.info("torch.compile() successful.")
+        except Exception as compile_e:
+            logger.warning(f"torch.compile() failed: {compile_e}. Proceeding without compilation.")
+
+        if is_distributed:
+            model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+            logger.info("Model wrapped with DDP.")
     except Exception as e:
         logger.critical(f"Model/Tokenizer init failed: {e}", exc_info=True)
         sys.exit(1)
