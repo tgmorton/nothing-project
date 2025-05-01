@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # === SBATCH Directives (Unchanged) ===
-#SBATCH --job-name=gpt2_p6000_sif_10m_LOCALEVAL # Modified job name slightly
+#SBATCH --job-name=gpt2_p6000_sif_100m_LOCALEVAL # Modified job name slightly
 #SBATCH --partition=general_gpu_p6000
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
+#SBATCH --time=168:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -112,8 +112,8 @@ singularity exec --nv \
         --output_dir "${CONTAINER_RUN_OUTPUT_DIR}" \
         \
         --num_train_epochs 20 \
-        --per_device_train_batch_size 4 \
-        --gradient_accumulation_steps 32 \
+        --per_device_train_batch_size 8 \
+
         \
         --learning_rate 3e-4 \
         --lr_scheduler_type "cosine" \
