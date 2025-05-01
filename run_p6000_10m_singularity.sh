@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # === SBATCH Directives (Unchanged) ===
-#SBATCH --job-name=gpt2_p6000_sif_LOCALEVAL # Modified job name slightly
+#SBATCH --job-name=gpt2_p6000_sif_10m_LOCALEVAL # Modified job name slightly
 #SBATCH --partition=general_gpu_p6000
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -120,6 +120,7 @@ singularity exec --nv \
         --num_warmup_steps 100 \
         --weight_decay 0.01 \
         --max_grad_norm 1.0 \
+        --model_size "10m" \
         \
         --use_amp \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \

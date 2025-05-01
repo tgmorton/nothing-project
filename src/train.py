@@ -68,6 +68,7 @@ def parse_args():
     parser.add_argument("--max_grad_norm", type=float, default=1.0, help="Max gradient norm for clipping.")
     parser.add_argument("--lr_scheduler_type", type=str, default="linear", help="LR scheduler type.", choices=["linear", "cosine", "constant", "constant_with_warmup"])
     parser.add_argument("--num_warmup_steps", type=int, default=0, help="LR warmup steps.")
+    parser.add_argument("--model_size", type=int, default="10m", help="Model size tag for small model config (e.g., '10m' or '100m').")
 
     # === Hardware & Precision ===
     parser.add_argument("--use_amp", action="store_true", help="Enable AMP training.")
@@ -588,7 +589,7 @@ def main():
     # === Model & Tokenizer Loading (For Training - Unchanged) ===
     model, tokenizer, config = None, None, None
     try:
-        if rank == 0: logger.info(f"Init NEW small model (10m config) from scratch. Tokenizer: {args.model}")
+        if rank == 0: logger.info(f"Init NEW small model ({args.model_size} config) from scratch. Tokenizer: {args.model}")
         tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
         if tokenizer.pad_token is None:
             if tokenizer.eos_token:
@@ -597,7 +598,7 @@ def main():
             else:
                 added = tokenizer.add_special_tokens({'pad_token': '[PAD]'})
                 logger.warning(f"Added pad_token ({added} new).")
-        config = create_small_model_config(base_model_name=args.model, corpus_size_tag="10m", tokenizer=tokenizer, logger=logger)
+        config = create_small_model_config(base_model_name=args.model, corpus_size_tag=args.model-size, tokenizer=tokenizer, logger=logger)
         model = GPT2LMHeadModel(config=config)
         logger.info("Model initialized with random weights.")
         model.to(device); logger.info(f"Initialized model on {device} (Rank {rank})")
