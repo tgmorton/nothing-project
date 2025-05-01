@@ -1,25 +1,25 @@
 #!/bin/bash
 
-# === SBATCH Directives ===
-#SBATCH --job-name=gpt2_p6000_sif_test1    # Job name for identification
-#SBATCH --partition=general_gpu_p6000    # Target the P6000 queue
-#SBATCH --nodes=1                        # Request one node
-#SBATCH --ntasks-per-node=1              # Run one task (the python script)
-#SBATCH --cpus-per-task=4                # Request CPUs for the task (dataloader workers, etc.)
-#SBATCH --mem=24G                        # Request RAM for the task (Node has 64GB total)
-#SBATCH --gres=gpu:1                     # Request 1 GPU
-#SBATCH --time=24:00:00                  # Time limit (HH:MM:SS) - e.g., 24 hours for first test
-#SBATCH --output=logs/%x_%j.out          # Standard output log file (%x=job name, %j=job ID) - Relative to submission dir
-#SBATCH --error=logs/%x_%j.err           # Standard error log file - Relative to submission dir
+# === SBATCH Directives (Unchanged) ===
+#SBATCH --job-name=gpt2_p6000_sif_LOCALEVAL # Modified job name slightly
+#SBATCH --partition=general_gpu_p6000
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=24G
+#SBATCH --gres=gpu:1
+#SBATCH --time=24:00:00
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
 
 # Exit on error
 set -e
 
-# === Environment Setup ===
-echo "=== Job Started: $(date) ==="
+# === Environment Setup (Unchanged) ===
+echo "=== Job Started (Local Eval Mode): $(date) ==="
 echo "Current Time: $(date)"
 echo "Job ID: $SLURM_JOB_ID"
-echo "Submission Directory: $SLURM_SUBMIT_DIR" # Directory where sbatch was run
+echo "Submission Directory: $SLURM_SUBMIT_DIR"
 echo "Node: $SLURMD_NODENAME"
 echo "Username: $USER"
 echo "Home Directory: $HOME"
@@ -27,88 +27,77 @@ echo "Allocated CPUs: $SLURM_CPUS_PER_TASK"
 echo "Allocated Memory: $SLURM_MEM_PER_TASK"
 echo "GPUs: $CUDA_VISIBLE_DEVICES"
 
-# --- Load necessary system modules ---
-# IMPORTANT: Verify these module names and versions using 'module avail' on SSRDE
+# --- Load necessary system modules (Unchanged) ---
 echo "Loading system modules..."
-module load singularity/4.1.1  cuda/11.8  # <<< MODIFY versions if needed based on 'module avail'
+module load singularity/4.1.1 cuda/11.8 # <<< MODIFY versions if needed
 
-# --- Securely Load Neptune Credentials ---
-# Assumes file created at $HOME/.neptune_creds with 'export NEPTUNE_API_TOKEN=...'
-# and permissions set with 'chmod 600 $HOME/.neptune_creds'
+# --- Securely Load Neptune Credentials (Unchanged) ---
 NEPTUNE_CRED_FILE="$HOME/.neptune_creds"
 if [ -f "$NEPTUNE_CRED_FILE" ]; then
     echo "Sourcing Neptune credentials from $NEPTUNE_CRED_FILE"
     source "$NEPTUNE_CRED_FILE"
-    # Make Neptune token available inside Singularity container
-    export SINGULARITYENV_NEPTUNE_API_TOKEN="${NEPTUNE_API_TOKEN:-}" # Use :- to avoid error if unset
-    # Export project if it's set in the cred file
+    export SINGULARITYENV_NEPTUNE_API_TOKEN="${NEPTUNE_API_TOKEN:-}"
     if [ -n "${NEPTUNE_PROJECT:-}" ]; then
       export SINGULARITYENV_NEPTUNE_PROJECT="${NEPTUNE_PROJECT}"
     fi
 else
-    echo "WARNING: Neptune credentials file not found at $NEPTUNE_CRED_FILE. Continuing without Neptune export."
+    echo "WARNING: Neptune credentials file not found at $NEPTUNE_CRED_FILE."
 fi
 
-# --- Define Paths on Host (SSRDE Cluster) ---
+# --- Define Paths on Host (Unchanged) ---
 HOST_PROJECT_DIR="/home/AD/thmorton/nothing-project"
-HOST_SIF_PATH="/home/AD/thmorton/python39_llm_env.sif"  # Location of your transferred .sif file
+HOST_SIF_PATH="/home/AD/thmorton/python39_llm_env.sif"
+HOST_DATA_BASE_DIR="${HOST_PROJECT_DIR}/data"
+HOST_OUTPUT_BASE_DIR="${HOST_PROJECT_DIR}/src/.output"
+HOST_PRIMING_BASE_DIR="${HOST_PROJECT_DIR}/eval"
 
-# !! MODIFY THESE BASE PATHS !!
-HOST_DATA_BASE_DIR="${HOST_PROJECT_DIR}/data"           # <<< EXAMPLE/MODIFY: Assumes data is in project/data
-HOST_OUTPUT_BASE_DIR="${HOST_PROJECT_DIR}/src/.output"      # <<< EXAMPLE/MODIFY: Assumes output goes to project/results
-HOST_PRIMING_BASE_DIR="${HOST_PROJECT_DIR}/eval" # <<< EXAMPLE/MODIFY: Assumes priming is in project/priming_data
-
-# Define corresponding paths *inside* the container
+# --- Define Container Paths (Unchanged) ---
 CONTAINER_WORKSPACE="/workspace"
 CONTAINER_DATA_DIR="/data"
-CONTAINER_OUTPUT_DIR="/.output"
-CONTAINER_PRIMING_DIR="/eval"
+CONTAINER_OUTPUT_DIR="/.output" # Output base mount inside container
+CONTAINER_PRIMING_DIR="/eval"   # Priming base mount inside container
 
-# Define specific run output directory name
-RUN_OUTPUT_NAME="gpt2_p6000_sif_test1"
+# --- Define Run Output Directory Name (Modified for clarity) ---
+RUN_OUTPUT_NAME="gpt2_p6000_sif_local_eval_run" # Modified name
 HOST_RUN_OUTPUT_DIR="${HOST_OUTPUT_BASE_DIR}/${RUN_OUTPUT_NAME}"
-CONTAINER_RUN_OUTPUT_DIR="${CONTAINER_OUTPUT_DIR}/${RUN_OUTPUT_NAME}"
+CONTAINER_RUN_OUTPUT_DIR="${CONTAINER_OUTPUT_DIR}/${RUN_OUTPUT_NAME}" # Specific output dir for this run inside container
 
-# --- Preparations ---
+# --- Preparations (Unchanged) ---
 echo "Project Directory (Host): ${HOST_PROJECT_DIR}"
 echo "SIF Image Path (Host): ${HOST_SIF_PATH}"
 echo "Data Base Directory (Host): ${HOST_DATA_BASE_DIR}"
 echo "Output Base Directory (Host): ${HOST_OUTPUT_BASE_DIR}"
-
-# Verify Singularity image exists
-if [ ! -f "$HOST_SIF_PATH" ]; then
-    echo "ERROR: Singularity image not found at $HOST_SIF_PATH"
-    exit 1
-fi
-
-# Ensure the base output directory exists on the host system
-# This directory will be created relative to where sbatch is run if paths are relative,
-# or at the absolute path if specified. Using absolute is safer.
+if [ ! -f "$HOST_SIF_PATH" ]; then echo "ERROR: Singularity image not found at $HOST_SIF_PATH"; exit 1; fi
 mkdir -p "${HOST_RUN_OUTPUT_DIR}"
 echo "Ensured host output directory exists: ${HOST_RUN_OUTPUT_DIR}"
-
-# Ensure the logs directory exists (for Slurm output) relative to submission dir
-# Assumes script is run from HOST_PROJECT_DIR
 mkdir -p "${HOST_PROJECT_DIR}/logs"
 
-# === Training Script Execution (Inside Container) ===
-echo "Starting Python training script inside Singularity container..."
+# === Training Script Execution (Modified Arguments for Local Eval) ===
+echo "Starting Python training script (with Local Eval) inside Singularity container..."
 
-# Define paths relative to container mount points for the python script args
-# These paths MUST match the targets in the -B arguments below AND your data structure
-CONTAINER_TRAIN_DATA_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m"         # Example: Assumes HOST_DATA_BASE_DIR/processed/train_arrow exists
-CONTAINER_VALID_DATA_PATH="${CONTAINER_DATA_DIR}/processed/training_set_10m"    # Example: Assumes HOST_DATA_BASE_DIR/processed/validation_arrow exists
-CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/priming-corpuses" # Example: Assumes HOST_PRIMING_BASE_DIR/priming_eval_files exists
+# --- Define paths relative to container mount points (Unchanged) ---
+CONTAINER_TRAIN_DATA_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m"
+CONTAINER_VALID_DATA_PATH="${CONTAINER_DATA_DIR}/processed/training_set_10m"
+CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/priming-corpuses"
+CONTAINER_EVAL_SCRIPT_PATH="${CONTAINER_WORKSPACE}/src/evaluate.py" # Path to evaluate.py inside container
 
-# Define Neptune args (Project might be set via cred file/env var)
-#NEPTUNE_PROJECT_ARG=""
-# If NEPTUNE_PROJECT is NOT set via env var SINGULARITYENV_NEPTUNE_PROJECT, uncomment and set it here:
-NEPTUNE_PROJECT_ARG="--neptune_project thmorton/NothingProject"
-NEPTUNE_RUN_NAME="${RUN_OUTPUT_NAME}_$(date +%Y%m%d_%H%M)" # Link run name to output dir name
-NEPTUNE_TAGS="p6000 test1 baseline singularity py39"       # Added space separation for tags
+# --- Define Neptune args (Modified Tags) ---
+NEPTUNE_PROJECT_ARG="" # Assume project set via SINGULARITYENV_ or leave empty if not using
+if [ -n "${SINGULARITYENV_NEPTUNE_PROJECT:-}" ]; then
+    NEPTUNE_PROJECT_ARG="--neptune_project ${SINGULARITYENV_NEPTUNE_PROJECT}"
+elif [ -n "${NEPTUNE_PROJECT:-}" ]; then # Fallback to shell variable if not passed via SINGULARITYENV_
+    NEPTUNE_PROJECT_ARG="--neptune_project ${NEPTUNE_PROJECT}"
+else
+    NEPTUNE_PROJECT_ARG="--neptune_project thmorton/NothingProject" # Hardcoded fallback
+fi
 
+NEPTUNE_RUN_NAME="${RUN_OUTPUT_NAME}_$(date +%Y%m%d_%H%M)"
+NEPTUNE_TAGS="p6000 test1 baseline singularity py39 local_eval" # Added local_eval tag
+
+# --- Set PyTorch CUDA Allocator Config (Unchanged) ---
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+# --- Execute Singularity Command (Modified Python Args) ---
 singularity exec --nv \
     -B "${HOST_PROJECT_DIR}":"${CONTAINER_WORKSPACE}" \
     -B "${HOST_DATA_BASE_DIR}":"${CONTAINER_DATA_DIR}" \
@@ -119,13 +108,12 @@ singularity exec --nv \
         --model "gpt2" \
         --train_dataset_path "${CONTAINER_TRAIN_DATA_PATH}" \
         --validation_dataset_path "${CONTAINER_VALID_DATA_PATH}" \
+        --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
         --output_dir "${CONTAINER_RUN_OUTPUT_DIR}" \
-        --eval_max_samples 5000 \
         \
         --num_train_epochs 20 \
         --per_device_train_batch_size 16 \
         --gradient_accumulation_steps 8 \
-        --per_device_eval_batch_size 32 \
         \
         --learning_rate 3e-4 \
         --lr_scheduler_type "cosine" \
@@ -140,14 +128,18 @@ singularity exec --nv \
         --logging_steps 50 \
         --eval_steps 100 \
         --save_steps 100 \
+        --priming_eval_steps 100 \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_run_name "${NEPTUNE_RUN_NAME}" \
         --neptune_tags ${NEPTUNE_TAGS} \
-        --run_priming_eval \
-        --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
-        --priming_eval_steps 100 \
-        --priming_eval_max_samples_per_file 0
+        \
+        --local_eval \
+        --evaluate_script_path "${CONTAINER_EVAL_SCRIPT_PATH}" \
+        --trigger_standard_eval \
+        --trigger_priming_eval \
+        # Removed eval-specific args (--per_device_eval_batch_size, --eval_max_samples, --priming_eval_max_samples_per_file)
+        # Renamed --run_priming_eval to --trigger_priming_eval
 
 # === Job Completion ===
 echo "=== Job Finished: $(date) ==="
