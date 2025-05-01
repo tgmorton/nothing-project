@@ -449,7 +449,7 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
             continue
         try:
             amp_enabled = args.use_amp and device.type == 'cuda'
-            with autocast(enabled=amp_enabled):
+            with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
                 outputs = model(**batch_on_device)
                 loss = outputs.loss
             if loss is None:
@@ -573,7 +573,30 @@ def main():
     if rank == 0 and NEPTUNE_AVAILABLE and args.neptune_project:
         try:
             run = neptune.init_run(project=args.neptune_project, name=args.neptune_run_name, tags=args.neptune_tags)
-            args_log = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
+            args_log = {}
+            logger.info("Processing arguments for Neptune logging...")  # Optional: Add logging
+            for k, v in vars(args).items():
+                if isinstance(v, Path):
+                    args_log[k] = str(v)
+                    # logger.debug(f"  Converted Path '{k}' to str") # Optional debug
+                elif isinstance(v, list):
+                    # Join list elements into a comma-separated string
+                    args_log[k] = ','.join(map(str, v)) if v else "None"  # Handle empty/None list
+                    # logger.debug(f"  Converted list '{k}' to str: {args_log[k]}") # Optional debug
+                elif v is None:
+                    args_log[k] = "None"  # Convert NoneType to string "None"
+                    # logger.debug(f"  Converted NoneType '{k}' to str 'None'") # Optional debug
+                else:
+                    # Keep other supported types (int, float, bool, str) as is
+                    args_log[k] = v
+                    # logger.debug(f"  Kept original type for '{k}': {type(v)}") # Optional debug
+
+            try:
+                run["parameters"] = args_log  # Log the processed dictionary
+                logger.info("Successfully logged processed parameters to Neptune.")  # Optional confirm
+            except Exception as neptune_log_e:
+                logger.error(f"Failed to log processed parameters to Neptune: {neptune_log_e}")
+
             run["parameters"] = args_log
             logger.info(f"Neptune logging enabled. Run URL: {run.get_url()}")
             # --- ADD THIS LINE ---
@@ -602,7 +625,17 @@ def main():
         model = GPT2LMHeadModel(config=config)
         logger.info("Model initialized with random weights.")
         model.to(device); logger.info(f"Initialized model on {device} (Rank {rank})")
-        if is_distributed: model = DDP(model, device_ids=[local_rank], output_device=local_rank); logger.info("Model wrapped with DDP.")
+        try:
+            logger.info("Attempting torch.compile()...")
+            # Start with default mode, can explore 'reduce-overhead' or 'max-autotune' later
+            model = torch.compile(model, mode="reduce-overhead")
+            logger.info("torch.compile() successful.")
+        except Exception as compile_e:
+            logger.warning(f"torch.compile() failed: {compile_e}. Proceeding without compilation.")
+
+        if is_distributed:
+            model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+            logger.info("Model wrapped with DDP.")
     except Exception as e:
         logger.critical(f"Model/Tokenizer init failed: {e}", exc_info=True)
         sys.exit(1)
@@ -633,7 +666,7 @@ def main():
     if rank == 0: logger.info(f"Estimated total training steps: {max_train_steps:,}")
     eff_warmup = min(args.num_warmup_steps, max_train_steps) if max_train_steps > 0 else 0; args.num_warmup_steps = eff_warmup
     lr_scheduler = get_scheduler(name=args.lr_scheduler_type, optimizer=optimizer, num_warmup_steps=args.num_warmup_steps, num_training_steps=max_train_steps)
-    scaler_enabled = args.use_amp and device.type == 'cuda'; scaler = torch.cuda.amp.GradScaler(enabled=scaler_enabled)
+    scaler_enabled = args.use_amp and device.type == 'cuda'; scaler = torch.amp.GradScaler(device_type=device.type, enabled=scaler_enabled)
     if args.use_amp and not scaler_enabled and rank == 0: logger.warning("AMP requested but CUDA unavailable.")
     if rank == 0: logger.info(f"AMP enabled: {scaler.is_enabled()}.")
 
