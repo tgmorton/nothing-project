@@ -4,7 +4,7 @@ import logging
 import pandas as pd
 from pathlib import Path
 import re
-from collections import defaultdict # Import defaultdict
+from collections import defaultdict
 
 # --- Configuration ---
 logging.basicConfig(
@@ -14,24 +14,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Define Known Structure Pairs ---
-# The script will look for these pairs in the data.
-# The first element in the tuple will correspond to 'value_struct1', the second to 'value_struct2'.
-STRUCTURE_PAIRS = [
-    ('tdo', 'tpo'),
-    ('pdo', 'ppo'),
-    ('ta', 'tp'),
-    # Add other pairs if they exist in your data, e.g., ('da', 'dp')
-]
-logger.info(f"Defined structure pairs for reshaping: {STRUCTURE_PAIRS}")
-
 # --- Helper Function ---
 
 def extract_step_from_path(file_path: Path) -> int | None:
-    """
-    Extracts the checkpoint step number from the filename.
-    Assumes filename format like '..._step_12345.json'.
-    """
+    """Extracts the checkpoint step number from the filename."""
     match = re.search(r"_step_(\d+)\.json$", file_path.name)
     if match:
         try:
@@ -43,6 +29,45 @@ def extract_step_from_path(file_path: Path) -> int | None:
         logger.warning(f"Could not find step number pattern ('_step_NUMBER.json') in filename {file_path.name}.")
         return None
 
+# --- Automatic Pair Detection Function ---
+
+def detect_structure_pair(metrics_dict: dict) -> tuple | None:
+    """
+    Attempts to detect exactly one pair of structure labels based on keys
+    starting with 'avg_PE_t' within the given metrics dictionary.
+
+    Args:
+        metrics_dict: The dictionary of metrics for a single corpus file.
+
+    Returns:
+        A tuple containing the two detected structure labels (sorted alphabetically),
+        or None if exactly two distinct labels were not found.
+    """
+    t_structure_labels = set()
+    prefix = "avg_PE_t" # Using the specific prefix requested
+
+    if not isinstance(metrics_dict, dict):
+        return None # Cannot process if not a dictionary
+
+    for key in metrics_dict.keys():
+        if key.startswith(prefix):
+            label = key[len(prefix):] # Extract the part after the prefix
+            if label: # Ensure the label is not empty
+                t_structure_labels.add(label)
+
+    if len(t_structure_labels) == 2:
+        detected_pair = tuple(sorted(list(t_structure_labels)))
+        logger.info(f"Auto-detected structure pair based on '{prefix}*' keys: {detected_pair}")
+        return detected_pair
+    else:
+        logger.warning(
+            f"Could not auto-detect exactly one structure pair using prefix '{prefix}'. "
+            f"Found {len(t_structure_labels)} distinct labels: {t_structure_labels}. "
+            f"Priming data reshaping will be skipped."
+        )
+        return None
+
+
 # --- Main Compilation Function ---
 
 def compile_evaluation_summaries(
@@ -51,14 +76,16 @@ def compile_evaluation_summaries(
 ):
     """
     Traverses subdirectories, finds evaluation summary JSONs,
-    extracts standard summaries, extracts and RESHAPES priming summaries,
-    compiles them into DataFrames, and saves them within the input_dir.
+    extracts standard summaries, attempts to auto-detect pairs and RESHAPE
+    priming summaries, compiles them into DataFrames, and saves them.
     """
-    priming_data_list = [] # Will store reshaped priming data
+    priming_data_list = []
     standard_data_list = []
     files_processed = 0
     files_found = 0
     max_step = -1
+    detected_pair_tuple = None # Stores the single detected pair, e.g., ('do', 'po')
+    pair_detection_attempted = False # Flag to ensure detection only happens once
 
     logger.info(f"Starting compilation process in directory: {input_dir}")
     logger.info(f"Searching recursively for files matching: {json_filename_pattern}")
@@ -80,78 +107,63 @@ def compile_evaluation_summaries(
                 data = json.load(f)
         except Exception as e:
             logger.error(f"Error reading or parsing JSON file {json_path}: {e}. Skipping.")
-            continue # Skip to next file
+            continue
 
-        # --- Process 'priming_summary' section (RESHAPED) ---
         priming_summary = data.get("priming_summary")
-        if isinstance(priming_summary, dict):
+
+        # --- Attempt Pair Detection (only on the first valid priming summary found) ---
+        if not pair_detection_attempted and isinstance(priming_summary, dict) and priming_summary:
+            # Try detecting from the metrics of the *first* corpus file listed
+            first_corpus_file = next(iter(priming_summary), None)
+            if first_corpus_file:
+                first_metrics_dict = priming_summary[first_corpus_file]
+                detected_pair_tuple = detect_structure_pair(first_metrics_dict)
+            else:
+                 logger.warning(f"First priming summary found in {json_path.name} was empty. Cannot detect pairs.")
+            pair_detection_attempted = True # Mark detection as attempted, even if failed
+
+        # --- Process 'priming_summary' section (RESHAPED, only if pair was detected) ---
+        if detected_pair_tuple and isinstance(priming_summary, dict): # Only reshape if a pair was successfully detected
+            s1_label, s2_label = detected_pair_tuple # Unpack the detected pair
+            contrast_label = f"{s1_label}/{s2_label}" # Precompute contrast string
+
             for csv_filename, metrics_dict in priming_summary.items():
                 if not isinstance(metrics_dict, dict):
-                    logger.warning(
-                        f"Step {checkpoint_step}, File {csv_filename}: Expected 'metrics' to be a dict, but got {type(metrics_dict)}. Skipping entry."
-                    )
+                    logger.warning(f"Step {checkpoint_step}, File {csv_filename}: Invalid metrics format. Skipping.")
                     continue
 
-                # --- Reshaping Logic ---
-                # 1. Parse all keys into base_metric and structure_label
-                parsed_metrics = defaultdict(dict) # Structure: {base_metric: {struct_label: value}}
-                structure_labels_present = set()
+                # --- Reshaping Logic (using the single detected pair) ---
+                parsed_metrics = defaultdict(dict)
                 base_metrics_present = set()
-
                 for key, value in metrics_dict.items():
-                    # Regex to capture base metric (group 1) and structure label (group 2)
-                    # Assumes label is the last part after '_' and contains no '_' itself
                     match = re.match(r"(.*)_([^_]+)$", key)
                     if match:
                         base_metric, struct_label = match.groups()
-                        # Handle potential non-numeric conversion issues early if needed
-                        # try:
-                        #     num_value = float(value)
-                        # except (ValueError, TypeError):
-                        #     num_value = None # Or keep as string, or log warning
-                        parsed_metrics[base_metric][struct_label] = value # Store original value for now
-                        structure_labels_present.add(struct_label)
-                        base_metrics_present.add(base_metric)
-                        # logger.debug(f"Parsed key '{key}' -> base: '{base_metric}', label: '{struct_label}'")
-                    else:
-                        logger.debug(f"Step {checkpoint_step}, File {csv_filename}: Could not parse key '{key}' into base_metric and structure_label.")
+                        if struct_label in detected_pair_tuple: # Only parse metrics relevant to the detected pair
+                             parsed_metrics[base_metric][struct_label] = value
+                             base_metrics_present.add(base_metric)
+                    # else: # Optional: log keys that don't match the expected format
+                        # logger.debug(f"Key '{key}' in file {csv_filename} doesn't match expected parsing format.")
 
-                # 2. Iterate through defined structure pairs
-                for s1_label, s2_label in STRUCTURE_PAIRS:
-                    # Check if BOTH labels of the pair are present in this file's data
-                    if s1_label in structure_labels_present and s2_label in structure_labels_present:
-                        contrast_label = f"{s1_label}/{s2_label}"
-                        # 3. Iterate through the base metrics found in this file
-                        for base_metric in base_metrics_present:
-                            # Retrieve the values for struct1 and struct2 for this base_metric
-                            # Uses .get() defaults to None if a specific struct_label wasn't found for this base_metric
-                            value1 = parsed_metrics.get(base_metric, {}).get(s1_label)
-                            value2 = parsed_metrics.get(base_metric, {}).get(s2_label)
+                for base_metric in base_metrics_present:
+                    value1 = parsed_metrics.get(base_metric, {}).get(s1_label)
+                    value2 = parsed_metrics.get(base_metric, {}).get(s2_label)
 
-                            # Create a row only if we found this base_metric for EITHER structure label
-                            # (This check might be redundant if both s1 and s2 must be present)
-                            if value1 is not None or value2 is not None:
-                                row_data = {
-                                    "checkpoint_step": checkpoint_step,
-                                    "corpus_file": csv_filename,
-                                    "metric_base": base_metric,
-                                    "contrast_pair": contrast_label,
-                                    # "label_struct1": s1_label, # Optional: uncomment to keep original labels
-                                    # "label_struct2": s2_label, # Optional: uncomment to keep original labels
-                                    "value_struct1": value1, # Value corresponding to s1_label
-                                    "value_struct2": value2, # Value corresponding to s2_label
-                                }
-                                priming_data_list.append(row_data)
-                        # logger.debug(f"Processed pair {contrast_label} for file {csv_filename}")
-                    # else:
-                        # logger.debug(f"Skipping pair {s1_label}/{s2_label} for file {csv_filename} as one or both labels missing.")
+                    if value1 is not None or value2 is not None:
+                        row_data = {
+                            "checkpoint_step": checkpoint_step,
+                            "corpus_file": csv_filename,
+                            "metric_base": base_metric,
+                            "contrast_pair": contrast_label, # Use the consistent label derived from the pair
+                            "value_struct1": value1,
+                            "value_struct2": value2,
+                        }
+                        priming_data_list.append(row_data)
                 # --- End Reshaping Logic ---
+        elif isinstance(priming_summary, dict) and pair_detection_attempted and not detected_pair_tuple:
+            # Log only once per file if detection was attempted but failed
+            logger.debug(f"Step {checkpoint_step}, File {json_path.name}: Skipping priming data reshaping as pair detection failed or wasn't applicable.")
 
-        elif priming_summary is not None:
-            logger.warning(
-                f"Step {checkpoint_step}: Expected 'priming_summary' to be a dict, "
-                f"but got {type(priming_summary)}. Skipping section."
-            )
 
         # --- Process 'standard_summary' section (Unchanged) ---
         standard_summary = data.get("standard_summary")
@@ -160,14 +172,10 @@ def compile_evaluation_summaries(
             row_data.update(standard_summary)
             standard_data_list.append(row_data)
         elif standard_summary is not None:
-            logger.warning(
-                f"Step {checkpoint_step}: Expected 'standard_summary' to be a dict, "
-                f"but got {type(standard_summary)}. Skipping section."
-            )
+             logger.warning(f"Step {checkpoint_step}: Invalid standard_summary format. Skipping.")
+
 
         files_processed += 1
-        # Reduce logging verbosity - comment out if not debugging
-        # logger.info(f"Successfully processed step {checkpoint_step} from {json_path.name}")
 
 
     logger.info(f"Found {files_found} files matching pattern.")
@@ -179,27 +187,31 @@ def compile_evaluation_summaries(
 
     # --- Determine Output Filenames and Save DataFrames ---
     output_suffix = f"upto_step_{max_step}.csv"
-    # Add 'reshaped' to priming filename for clarity
-    output_priming_csv = input_dir / f"compiled_priming_summary_reshaped_{output_suffix}"
-    output_standard_csv = input_dir / f"compiled_standard_summary_{output_suffix}" # Standard name unchanged
+    output_standard_csv = input_dir / f"compiled_standard_summary_{output_suffix}"
 
-    # Priming Summary DataFrame (Reshaped)
-    if priming_data_list:
+    # Only save priming CSV if pair detection was successful and data was generated
+    if detected_pair_tuple and priming_data_list:
+        output_priming_csv = input_dir / f"compiled_priming_summary_reshaped_auto_{output_suffix}"
         try:
             priming_df = pd.DataFrame(priming_data_list)
-            # Sort reshaped data appropriately
             priming_df = priming_df.sort_values(
                 by=["checkpoint_step", "corpus_file", "contrast_pair", "metric_base"]
             )
-            logger.info(f"Created RESHAPED Priming Summary DataFrame with {len(priming_df)} rows and {len(priming_df.columns)} columns.")
+            logger.info(f"Created AUTO-RESHAPED Priming Summary DataFrame with {len(priming_df)} rows and {len(priming_df.columns)} columns.")
             priming_df.to_csv(output_priming_csv, index=False, encoding='utf-8')
-            logger.info(f"Successfully saved RESHAPED Priming Summary data to: {output_priming_csv}")
+            logger.info(f"Successfully saved AUTO-RESHAPED Priming Summary data to: {output_priming_csv}")
         except Exception as e:
-            logger.error(f"Failed to create or save RESHAPED Priming Summary DataFrame: {e}")
+            logger.error(f"Failed to create or save AUTO-RESHAPED Priming Summary DataFrame: {e}")
+    elif not detected_pair_tuple and pair_detection_attempted:
+         logger.warning("Priming data was found, but reshaping was skipped because structure pair detection failed.")
+    elif not priming_data_list and detected_pair_tuple:
+         logger.warning("Structure pair was detected, but no corresponding priming data rows were generated.")
     else:
-        logger.warning("No data found for RESHAPED Priming Summary despite processing files. CSV file will not be created.")
+         # This case includes scenarios where no priming_summary was ever found
+         logger.info("No reshaped priming data was generated (either no priming data found or pair detection not applicable).")
 
-    # Standard Summary DataFrame (Unchanged)
+
+    # Standard Summary DataFrame
     if standard_data_list:
         try:
             standard_df = pd.DataFrame(standard_data_list)
@@ -210,32 +222,26 @@ def compile_evaluation_summaries(
         except Exception as e:
             logger.error(f"Failed to create or save Standard Summary DataFrame: {e}")
     else:
-        logger.warning("No data found for Standard Summary despite processing files. CSV file will not be created.")
+        logger.warning("No data found for Standard Summary. CSV file will not be created.")
 
     logger.info("Compilation process finished.")
 
 
 # --- Command Line Argument Parsing ---
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Compile evaluation summary JSON files from multiple checkpoint runs into CSVs. "
-                    "Priming data is reshaped into a 'long' format based on structure pairs. "
-                    "Output CSVs are saved in the input directory."
+        description="Compile evaluation summary JSON files into CSVs. "
+                    "Attempts to auto-detect structure pairs from 'avg_PE_t*' keys in the first file "
+                    "to reshape priming data. Output CSVs saved in the input directory."
     )
-
+    # Arguments remain the same as the previous simplified version
     parser.add_argument(
-        "--input_dir",
-        type=str,
-        required=True,
-        help="The root directory containing the evaluation output folders or JSON files. "
-             "The script will search recursively. Output CSVs will also be saved here."
+        "--input_dir", type=str, required=True,
+        help="Root directory with evaluation outputs. Searched recursively. Output saved here."
     )
     parser.add_argument(
-        "--filename_pattern",
-        type=str,
-        default="evaluation_summary_step_*.json",
-        help="Glob pattern used to find the JSON summary files within the input directory."
+        "--filename_pattern", type=str, default="evaluation_summary_step_*.json",
+        help="Glob pattern for summary JSON files."
     )
 
     args = parser.parse_args()
