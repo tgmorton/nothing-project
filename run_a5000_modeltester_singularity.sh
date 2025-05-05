@@ -72,7 +72,7 @@ for ms in "${model_sizes[@]}"; do
   elif [[ "$ms" == "100m" ]]; then
     batch_configs=("${batch_configs_100m[@]}")
     # Define eval dataset paths for 100m
-    CONTAINER_VALID_DATA_PATH="${CONTAINER_DATA_DIR}/processed/test_set_100m" # Example path
+    CONTAINER_VALID_DATA_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m" # Example path
   else
     echo "WARNING: Unknown model size '$ms'. Skipping."
     continue
