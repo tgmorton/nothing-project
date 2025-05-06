@@ -1,354 +1,242 @@
 # --- 0. Load Libraries ---
 message("Loading libraries...")
+# Install packages if you haven't already:
+# install.packages(c("readr", "dplyr", "tidyr", "ggplot2", "stringr"))
 suppressPackageStartupMessages(library(readr))
 suppressPackageStartupMessages(library(dplyr))
 suppressPackageStartupMessages(library(tidyr))
 suppressPackageStartupMessages(library(ggplot2))
-suppressPackageStartupMessages(library(scales))
-suppressPackageStartupMessages(library(RColorBrewer))
-suppressPackageStartupMessages(library(pheatmap))
-suppressPackageStartupMessages(library(grid))
-# Using startsWith and grepl from base R
-
+suppressPackageStartupMessages(library(stringr)) # Included in tidyverse, but explicit loading is fine
 message("Libraries loaded.")
 
 # --- 1. Setup & Logging ---
-csv_path <- 'results_filtered.csv' # Make sure this points to your cleaned CSV if necessary
+# Define the path to your input CSV file
+csv_path <- '/Users/thomasmorton/ModelFolder/src/.output/gpt2_p6000_sif_local_eval_run/compiled_priming_summary_reshaped_upto_step_12800.csv' # <<< IMPORTANT: Replace with the actual path to your CSV file
+# Define path for potential output (e.g., transformed data)
+output_csv_path <- 'transformed_summary_wide.csv' # Updated output filename
+output_plot_dir <- "analysis/plots_priming"
+
 overall_start_time <- Sys.time()
 current_date_time <- format(overall_start_time, "%Y-%m-%d %H:%M:%S %Z")
 message("--- Script started at ", current_date_time, " ---")
 message("Using input file: ", csv_path)
 
+# Check if input file exists
 if (!file.exists(csv_path)) {
-  stop("Error: CSV file not found at path: ", csv_path)
+  # If using the sample data below, comment out or remove this stop() call
+   stop("Error: Input CSV file not found at path: ", csv_path)
+  # message("Warning: Input CSV file not found. Using internal sample data for demonstration.")
+}
+
+# Create output directory if it doesn't exist
+if (!dir.exists(output_plot_dir)) {
+  message("Creating output directory: ", output_plot_dir)
+  dir.create(output_plot_dir)
 }
 
 # --- 2. Read Data ---
 message("Starting data read...")
 read_start_time <- Sys.time()
+
 df_raw <- read_csv(
   csv_path,
   col_types = cols(
-    eval_num = col_integer(), corpus_file = col_character(),
-    target_structure = col_character(), item_index = col_integer(),
-    pe = col_double(), logp_con = col_double(), logp_incon = col_double()
+    checkpoint_step = col_integer(),
+    corpus_file = col_character(),
+    metric_base = col_character(),
+    contrast_pair = col_character(),
+    value_struct1 = col_double(),
+    value_struct2 = col_double()
   ),
-  lazy = TRUE, show_col_types = FALSE
+  lazy = TRUE, # Set lazy = FALSE if you encounter issues
+  show_col_types = FALSE
 )
+
 read_end_time <- Sys.time()
 message("Data read complete (", nrow(df_raw), " rows). Time taken: ", format(read_end_time - read_start_time))
 
-# --- 3. Pre-process & Select ---
-message("Starting pre-processing...")
-df_processed <- df_raw %>%
-  select(eval_num, corpus_file, target_structure, pe) %>%
-  filter(!is.na(eval_num) & !is.na(corpus_file) & !is.na(target_structure) & !is.na(pe)) %>%
-  mutate(
-    target_structure = sub("^t", "", target_structure),
-    eval_num = as.numeric(eval_num)
-  )
-message("Pre-processing complete.")
-rm(df_raw); #gc()
+# --- 3. Pre-process & Transform Data (Long Format) ---
+message("Starting initial data transformation (to long format)...")
+transform_start_time_1 <- Sys.time()
 
-# --- 4. Summarize Data (Includes SEM) ---
-message("Starting data summarization (for all data)...")
-summary_start_time <- Sys.time()
-summary_df <- df_processed %>%
-  group_by(eval_num, corpus_file, target_structure) %>%
-  summarise(
-    mean_pe = mean(pe, na.rm = TRUE),
-    sd_pe = sd(pe, na.rm = TRUE),
-    n_pe = n(),
-    .groups = 'drop'
-  ) %>%
-  mutate(
-    sem_pe = sd_pe / sqrt(n_pe),
-    sem_pe = ifelse(n_pe <= 1 | is.na(sd_pe), 0, sem_pe)
-  ) %>%
-  select(-sd_pe, -n_pe) %>%
-  filter(!is.na(mean_pe))
-
-summary_end_time <- Sys.time()
-message("Summarization complete (", nrow(summary_df), " summary rows). Time taken: ", format(summary_end_time - summary_start_time))
-rm(df_processed); #gc()
-
-# --- 5. Define Patterns for Filtering ---
-# *** UPDATED to exclude Exp6 from 'Other' ***
-exp_pattern_other_exclusion <- "^Exp[1236]" # Pattern to define the "Other" groups (excluding Exp1, 2, 3, AND 6)
-lexboost_pattern <- "^LEXBOOSTFULL"
-# *** UPDATED to include Exp6 in individual plots ***
-target_exp_prefixes <- c("Exp1", "Exp2", "Exp3", "Exp6") # Individual experiments to plot
-
-
-# --- 6. Plotting Function - Line Plots (Unchanged - Ribbon logic depends on data) ---
-plot_lines <- function(summary_data_subset_line, title_suffix) {
-    # (Function code remains the same)
-    if (nrow(summary_data_subset_line) == 0) {
-        message("Skipping Line Plot ", title_suffix, ": No data.")
-        return(NULL)
-    }
-    summary_data_subset_line <- summary_data_subset_line %>% arrange(eval_num)
-    message("Creating Line Plot ", title_suffix)
-    num_facets <- n_distinct(summary_data_subset_line$corpus_file)
-    show_ribbon <- any(summary_data_subset_line$sem_pe > 0, na.rm = TRUE)
-
-    p <- ggplot(summary_data_subset_line,
-                aes(x = eval_num, y = mean_pe,
-                    color = target_structure, fill = target_structure, linetype = target_structure)) +
-        geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.5) +
-        geom_line(linewidth = 0.7)
-
-    if (show_ribbon) {
-        p <- p + geom_ribbon(aes(ymin = mean_pe - sem_pe, ymax = mean_pe + sem_pe), alpha = 0.25, color = NA)
-    } else {
-        message("Note: No meaningful SEM values (>0) found for line plot ", title_suffix, ". Ribbons omitted.")
-    }
-
-    p <- p +
-        facet_wrap(~ corpus_file, scales = "free_y", ncol = 1) +
-        scale_color_brewer(palette = "Set1", name = "Structure") +
-        scale_fill_brewer(palette = "Set1", name = "Structure") +
-        scale_linetype_discrete(name = "Structure") +
-        scale_x_continuous(breaks = pretty_breaks()) +
-        labs(
-            title = paste("Longitudinal Priming Effect (Mean PE +/- SEM)", title_suffix),
-            x = "Evaluation Number", y = "Mean Priming Effect (PE)" ) +
-        theme_minimal(base_size = 11) +
-        theme( strip.text = element_text(face = "bold", size = 9), legend.position = "top",
-                panel.spacing.y = unit(0.5, "lines"), axis.text.x = element_text(size=9, angle = 0, hjust=0.5),
-                axis.text.y = element_text(size=9) )
-    return(p)
+# Check if required columns exist
+required_cols <- c("checkpoint_step", "corpus_file", "metric_base", "contrast_pair", "value_struct1", "value_struct2")
+if (!all(required_cols %in% names(df_raw))) {
+  stop("Error: Missing one or more required columns in the input data: ", paste(setdiff(required_cols, names(df_raw)), collapse=", "))
 }
 
-# --- 7. Plotting Function - Heatmaps (Unchanged - Row order flipped in previous version) ---
-plot_heatmap_pheatmap <- function(summary_data_subset, title_suffix) {
-   # (Function code remains the same - includes reversed factor levels for target_structure)
-   if (nrow(summary_data_subset) == 0) {
-    message("Skipping pheatmap ", title_suffix, ": No data.")
-    return(NULL)
+# Separate contrast_pair and pivot longer
+df_long <- df_raw %>%
+  filter(!is.na(contrast_pair)) %>%
+  separate(contrast_pair, into = c("structure_name_1", "structure_name_2"), sep = "/", remove = FALSE, fill = "right") %>%
+  pivot_longer(
+    cols = c(value_struct1, value_struct2),
+    names_to = "value_col_origin",
+    values_to = "value",
+    values_drop_na = TRUE
+  ) %>%
+  mutate(
+    structure = case_when(
+      value_col_origin == "value_struct1" ~ structure_name_1,
+      value_col_origin == "value_struct2" ~ structure_name_2,
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  select(
+    checkpoint_step, corpus_file, metric_base, contrast_pair, structure, value
+  ) %>%
+  filter(!is.na(structure)) %>%
+  arrange(checkpoint_step, corpus_file, metric_base, contrast_pair, structure)
+
+transform_end_time_1 <- Sys.time()
+message("Initial transformation complete (", nrow(df_long), " rows in long format). Time taken: ", format(transform_end_time_1 - transform_start_time_1))
+# rm(df_raw) # Optional: remove raw data frame
+
+# --- 4. Reshape Data (Wide Format by Summary Stat) ---
+message("Reshaping data (to wide format by summary statistic)...")
+transform_start_time_2 <- Sys.time()
+
+df_wide_summary <- df_long %>%
+  # Separate metric_base into summary stat type and core metric name
+  # Assumes format like "avg_MetricName", "std_MetricName"
+  # 'extra = "merge"' ensures that if MetricName contains '_', it stays together
+  separate(metric_base, into = c("summary_stat", "core_metric"), sep = "_", extra = "merge", remove = TRUE) %>%
+  # Filter out any rows where separation might have failed (e.g., unexpected metric_base format)
+  filter(!is.na(summary_stat), !is.na(core_metric), summary_stat %in% c("avg", "sem", "std", "count")) %>%
+  # Pivot wider: make avg, sem, std, count into columns
+  pivot_wider(
+    names_from = summary_stat, # Column containing the new column names (avg, sem, std, count)
+    values_from = value        # Column containing the values for the new columns
+  ) %>%
+  # Arrange for better readability
+  arrange(checkpoint_step, corpus_file, core_metric, contrast_pair, structure)
+
+transform_end_time_2 <- Sys.time()
+message("Reshaping to wide format complete (", nrow(df_wide_summary), " rows). Time taken: ", format(transform_end_time_2 - transform_start_time_2))
+# rm(df_long) # Optional: remove intermediate long data frame
+
+# --- 5. Inspect Transformed Data (Wide Format) ---
+message("Showing the first few rows of the final wide transformed data:")
+print(head(df_wide_summary))
+message("Structure of the final wide transformed data:")
+glimpse(df_wide_summary) # Use glimpse for a concise structure overview
+
+# Optional: Save the transformed data
+message("Saving final wide transformed data to: ", output_csv_path)
+write_csv(df_wide_summary, output_csv_path)
+
+# --- 6. Generate Plots (Using Wide Data) ---
+# This section generates plots based on the df_wide_summary data frame.
+message("Generating plots using wide data...")
+plot_start_time <- Sys.time()
+
+# --- 6a. Loop: Average PE over Time (+/- SEM) for each Corpus File ---
+message("--- Starting loop: Generating PE plots per corpus file ---")
+
+# Get unique corpus file names
+unique_corpus_files <- unique(df_wide_summary$corpus_file)
+
+# Loop through each unique corpus file
+for (current_corpus in unique_corpus_files) {
+  message("Processing corpus file: ", current_corpus)
+
+  # Filter data for the current corpus file and PE metric
+  plot_data_pe_current <- df_wide_summary %>%
+    filter(corpus_file == current_corpus, core_metric == "PE") %>%
+    # Ensure avg and sem columns exist and are numeric for plotting
+    filter(!is.na(avg) & is.numeric(avg) & !is.na(sem) & is.numeric(sem))
+
+  # Check if there's enough data (at least 2 distinct checkpoints for a line)
+  if (nrow(plot_data_pe_current) > 0 && n_distinct(plot_data_pe_current$checkpoint_step) > 1) {
+
+    # Sanitize corpus file name for use in filename
+    # Replace common problematic characters with underscores
+    safe_corpus_name <- gsub("[^a-zA-Z0-9_.-]", "_", current_corpus)
+    # Limit length if necessary (optional)
+    # max_len <- 100
+    # if (nchar(safe_corpus_name) > max_len) {
+    #   safe_corpus_name <- substr(safe_corpus_name, 1, max_len)
+    # }
+
+    plot_filename <- file.path(output_plot_dir, paste0("avg_pe_sem_", safe_corpus_name, ".png"))
+    plot_title <- paste("Average PE (+/- SEM) over Checkpoints")
+    plot_subtitle <- paste("Corpus:", current_corpus)
+
+    message("  Generating plot: ", plot_filename)
+
+    p_pe_time_corpus <- ggplot(plot_data_pe_current, aes(x = checkpoint_step, y = avg, color = structure, fill = structure)) +
+      # Use group = structure explicitly if interaction() was needed before, but color/fill usually handles it
+      geom_line(alpha = 0.9, aes(group = structure)) +
+      # Add SEM ribbon - ensure SEM is non-negative
+      geom_ribbon(aes(ymin = avg - pmax(0, sem), ymax = avg + pmax(0, sem), group = structure), alpha = 0.2, color = NA) +
+      geom_point(size = 1.5, aes(group = structure)) +
+      # Removed facet_wrap as we are plotting per corpus file
+      labs(
+        title = plot_title,
+        subtitle = plot_subtitle,
+        x = "Checkpoint Step",
+        y = "Average PE Value",
+        color = "Structure",
+        fill = "Structure"
+      ) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") + # Add line at y=0
+      theme_minimal(base_size = 10) +
+      theme(legend.position = "top", axis.text.x = element_text(angle = 45, hjust = 1))
+
+    # Save the plot
+    ggsave(plot_filename, plot = p_pe_time_corpus, width = 8, height = 6, dpi = 150)
+    message("  Saved plot: ", plot_filename)
+
+  } else {
+    message("  Skipping PE plot for '", current_corpus, "': Not enough distinct checkpoint steps or missing avg/sem data.")
   }
-   message("Creating pheatmap ", title_suffix)
-   heatmap_data_wide <- summary_data_subset %>%
-     mutate(target_structure = factor(target_structure, levels = rev(sort(unique(target_structure))))) %>%
-     arrange(corpus_file, target_structure, eval_num) %>%
-     mutate(row_label = interaction(corpus_file, target_structure, sep = ":", lex.order = TRUE)) %>%
-     select(row_label, eval_num, mean_pe) %>%
-     pivot_wider(names_from = eval_num, values_from = mean_pe)
+} # End of loop through corpus files
+message("--- Finished loop: PE plots per corpus file ---")
 
-   heatmap_matrix <- as.matrix(select(heatmap_data_wide, -row_label))
-   rownames(heatmap_matrix) <- heatmap_data_wide$row_label
 
-   if (nrow(heatmap_matrix) == 0 || ncol(heatmap_matrix) == 0) {
-       message("Matrix for pheatmap is empty ", title_suffix, ". Skipping.")
-       return(NULL)
-   }
+# --- 6b. Example: Comparing average LogP_con structures at a single checkpoint ---
+# (Keeping this example as it wasn't requested to be removed)
+message("--- Generating comparison plot for LogP_con at Checkpoint 400 ---")
+plot_data_logp_compare <- df_wide_summary %>%
+  filter(checkpoint_step == 400, core_metric == "LogP_con") %>%
+  filter(!is.na(avg) & is.numeric(avg)) # Ensure avg exists
 
-   max_abs_pe <- max(abs(heatmap_matrix), na.rm = TRUE)
-   if (!is.finite(max_abs_pe)) {
-       message("Cannot determine finite max_abs_pe for heatmap ", title_suffix, ". Skipping.")
-       return(NULL)
-   }
-   if (max_abs_pe < 1e-9) max_abs_pe <- 1e-9
+if (nrow(plot_data_logp_compare) > 0) {
+  message("Generating plot: Average LogP_con comparison at Checkpoint 400")
+  p_logp_compare <- ggplot(plot_data_logp_compare, aes(x = structure, y = avg, fill = structure)) +
+    geom_col(position = "dodge") +
+    # Optional: Add error bars if std or sem is relevant and available
+    # geom_errorbar(aes(ymin = avg - sem, ymax = avg + sem), width = 0.2, position = position_dodge(0.9)) +
+    facet_wrap(~ corpus_file, scales = "free_x", ncol = 2) + # Facet by corpus file
+    labs(
+      title = "Average LogP_con Comparison at Checkpoint 400",
+      subtitle = "Comparing structures within each corpus file",
+      x = "Structure",
+      y = "Average LogP_con Value",
+      fill = "Structure"
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text = element_text(size = 8))
 
-   n_colors <- 101
-   my_colors <- colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(n_colors)
-   my_breaks <- seq(-max_abs_pe * 1.01, max_abs_pe * 1.01, length.out = n_colors + 1)
+  # print(p_logp_compare) # Display the plot
+  plot_filename_logp <- file.path(output_plot_dir, "example_avg_logp_con_comparison_cp400.png")
+  ggsave(plot_filename_logp, plot = p_logp_compare, width = 10, height = 6, dpi = 150)
+   message("Saved plot: ", plot_filename_logp)
 
-   if(any(duplicated(my_breaks))) {
-       stop("Fatal Error: Duplicate breaks generated even with linear sequence.")
-   }
-   if(length(my_breaks) != n_colors + 1) {
-       stop(paste("Fatal Error: Incorrect number of breaks:", length(my_breaks), "generated for", length(my_colors), "colors."))
-   }
-
-   fontsize_row <- max(4, min(8, round(200 / nrow(heatmap_matrix))))
-   fontsize_col <- max(4, min(8, round(200 / ncol(heatmap_matrix))))
-
-   p <- tryCatch({
-       pheatmap(
-           heatmap_matrix, color = my_colors, breaks = my_breaks,
-           cluster_rows = FALSE,
-           cluster_cols = FALSE,
-           border_color = "grey85",
-           na_col = "grey50", main = paste("Priming Effect (Mean PE) Heatmap", title_suffix),
-           fontsize = 8, fontsize_row = fontsize_row, fontsize_col = fontsize_col,
-           angle_col = "45", silent = TRUE
-       )
-   }, error = function(e) {
-       message("Error during pheatmap generation for ", title_suffix, ": ", e$message)
-       return(NULL)
-   })
-   return(p)
+} else {
+  message("Skipping 'Average LogP_con comparison at Checkpoint 400' plot: No data found for the specified filters.")
 }
 
-
-# --- 8. Generate and Display/Save Plots for Each Required Subset ---
-output_dir <- "plots"
-if (!dir.exists(output_dir)) dir.create(output_dir)
-
-# --- Plotting Block 1: Individual Experiments (Exp1, Exp2, Exp3, Exp6) --- ## UPDATED ##
-message("\n--- Starting plot generation loop for individual experiments (Exp1, Exp2, Exp3, Exp6) ---")
-# Target prefixes defined in Step 5 now include Exp6
-for (prefix in target_exp_prefixes) {
-  plot_start_time_loop <- Sys.time()
-  message("\n--- Processing prefix: ", prefix, " ---")
-  current_summary_subset <- summary_df %>% filter(startsWith(corpus_file, prefix))
-
-  if (nrow(current_summary_subset) == 0) {
-    message("  Skipping plots for '", prefix, "' corpora: No data found.")
-    next
-  } else { message("  Found ", nrow(current_summary_subset), " summary rows for '", prefix, "'.") }
-
-  plot_title_suffix <- paste0("for '", prefix, "' Corpora")
-  plot_filename_base <- prefix
-
-  # Generate Line Plot (Ribbons depend on SEM > 0)
-  line_plot <- plot_lines(current_summary_subset, plot_title_suffix)
-  if (!is.null(line_plot)) {
-      line_filename <- file.path(output_dir, paste0("lineplot_", plot_filename_base, ".png"))
-      num_facets <- n_distinct(current_summary_subset$corpus_file)
-      ggsave(line_filename, plot = line_plot, width = 8, height = max(4, 2 * num_facets),
-             units = "in", dpi = 150, limitsize = FALSE)
-      message("  Line plot saved to ", line_filename)
-  } else { message("  Line plot generation failed or skipped.") }
-
-  # Generate Heatmap
-  heatmap_grob <- plot_heatmap_pheatmap(current_summary_subset, plot_title_suffix)
-  if (!is.null(heatmap_grob)) {
-      heatmap_input_rows <- current_summary_subset %>% distinct(corpus_file, target_structure) %>% nrow()
-      if (is.null(heatmap_input_rows) || !is.numeric(heatmap_input_rows) || heatmap_input_rows == 0) heatmap_input_rows <- 20
-      heatmap_filename <- file.path(output_dir, paste0("pheatmap_", plot_filename_base, ".png"))
-      png(heatmap_filename, width = 2000, height = max(800, 15 * heatmap_input_rows), res = 150)
-      grid::grid.newpage(); grid::grid.draw(heatmap_grob$gtable); dev.off()
-      message("  Heatmap saved to ", heatmap_filename)
-  } else { message("  Heatmap generation failed or skipped.") }
-
-  plot_end_time_loop <- Sys.time()
-  message("  Plotting for '", prefix, "' complete. Time taken: ", format(plot_end_time_loop - plot_start_time_loop))
-}
-message("\n--- Finished individual experiment plot loop ---")
+plot_end_time <- Sys.time()
+message("Plotting finished. Time taken: ", format(plot_end_time - plot_start_time))
 
 
-# --- Plotting Block 2: LEXBOOSTFULL Corpora ---
-message("\n--- Generating plots for 'LEXBOOSTFULL' corpora ---")
-plot_start_time <- Sys.time()
-summary_lexboost <- summary_df %>% filter(startsWith(corpus_file, "LEXBOOSTFULL"))
-
-if (nrow(summary_lexboost) > 0) {
-    message("  Found ", nrow(summary_lexboost), " summary rows for 'LEXBOOSTFULL'.")
-    plot_title_suffix <- "for 'LEXBOOSTFULL' Corpora"
-    plot_filename_base <- "LEXBOOSTFULL"
-
-    # Generate Line Plot (Ribbons depend on SEM > 0)
-    line_plot <- plot_lines(summary_lexboost, plot_title_suffix)
-    if (!is.null(line_plot)) {
-        line_filename <- file.path(output_dir, paste0("lineplot_", plot_filename_base, ".png"))
-        num_facets <- n_distinct(summary_lexboost$corpus_file)
-        ggsave(line_filename, plot = line_plot, width = 8, height = max(4, 2 * num_facets),
-               units = "in", dpi = 150, limitsize = FALSE)
-        message("  Line plot saved to ", line_filename)
-    } else { message("  Line plot generation failed or skipped.") }
-
-    # Generate Heatmap
-    heatmap_grob <- plot_heatmap_pheatmap(summary_lexboost, plot_title_suffix)
-    if (!is.null(heatmap_grob)) {
-        heatmap_input_rows <- summary_lexboost %>% distinct(corpus_file, target_structure) %>% nrow()
-        if (is.null(heatmap_input_rows) || !is.numeric(heatmap_input_rows) || heatmap_input_rows == 0) heatmap_input_rows <- 20
-        heatmap_filename <- file.path(output_dir, paste0("pheatmap_", plot_filename_base, ".png"))
-        png(heatmap_filename, width = 2000, height = max(800, 15 * heatmap_input_rows), res = 150)
-        grid::grid.newpage(); grid::grid.draw(heatmap_grob$gtable); dev.off()
-        message("  Heatmap saved to ", heatmap_filename)
-    } else { message("  Heatmap generation failed or skipped.") }
-
-    plot_end_time <- Sys.time()
-    message("  Plotting complete. Time taken: ", format(plot_end_time - plot_start_time))
-    rm(summary_lexboost)
-} else { message("--- Skipping plots for 'LEXBOOSTFULL' corpora: No data ---") }
-
-
-# --- Plotting Block 3: All Other Corpora (Not Exp1/2/3/6) --- ## UPDATED ##
-message("\n--- Generating plots for All Non-'Exp1/2/3/6' corpora ---")
-plot_start_time <- Sys.time()
-# Filter for everything NOT starting with Exp1, Exp2, Exp3, or Exp6
-# Uses exp_pattern_other_exclusion defined in Step 5, which now includes 6
-summary_other_all <- summary_df %>%
-    filter(!grepl(exp_pattern_other_exclusion, corpus_file))
-
-if (nrow(summary_other_all) > 0) {
-    message("  Found ", nrow(summary_other_all), " summary rows for 'Other (All - excl. Exp1/2/3/6)'.")
-    plot_title_suffix <- "for All Non-'Exp1/2/3/6' Corpora" # Updated title
-    plot_filename_base <- "Other_All"
-
-    # Generate Line Plot (Ribbons depend on SEM > 0)
-    line_plot <- plot_lines(summary_other_all, plot_title_suffix)
-    if (!is.null(line_plot)) {
-        line_filename <- file.path(output_dir, paste0("lineplot_", plot_filename_base, ".png"))
-        num_facets <- n_distinct(summary_other_all$corpus_file)
-        ggsave(line_filename, plot = line_plot, width = 8, height = max(4, 2 * num_facets),
-               units = "in", dpi = 150, limitsize = FALSE)
-        message("  Line plot saved to ", line_filename)
-    } else { message("  Line plot generation failed or skipped.") }
-
-    # Generate Heatmap
-    heatmap_grob <- plot_heatmap_pheatmap(summary_other_all, plot_title_suffix)
-    if (!is.null(heatmap_grob)) {
-        heatmap_input_rows <- summary_other_all %>% distinct(corpus_file, target_structure) %>% nrow()
-        if (is.null(heatmap_input_rows) || !is.numeric(heatmap_input_rows) || heatmap_input_rows == 0) heatmap_input_rows <- 20
-        heatmap_filename <- file.path(output_dir, paste0("pheatmap_", plot_filename_base, ".png"))
-        png(heatmap_filename, width = 2000, height = max(800, 15 * heatmap_input_rows), res = 150)
-        grid::grid.newpage(); grid::grid.draw(heatmap_grob$gtable); dev.off()
-        message("  Heatmap saved to ", heatmap_filename)
-    } else { message("  Heatmap generation failed or skipped.") }
-
-    plot_end_time <- Sys.time()
-    message("  Plotting complete. Time taken: ", format(plot_end_time - plot_start_time))
-    # Keep summary_other_all for next block
-} else { message("--- Skipping plots for All Non-'Exp1/2/3/6' corpora: No data ---") }
-
-
-# --- Plotting Block 4: Filtered Other Corpora (excluding LEXBOOSTFULL) --- ## UPDATED ##
-message("\n--- Generating plots for Non-'Exp1/2/3/6' (excluding LEXBOOSTFULL) corpora ---")
-plot_start_time <- Sys.time()
-if (exists("summary_other_all") && nrow(summary_other_all) > 0) {
-    summary_other_filtered <- summary_other_all %>% filter(!startsWith(corpus_file, "LEXBOOSTFULL"))
-
-    if (nrow(summary_other_filtered) > 0) {
-        message("  Found ", nrow(summary_other_filtered), " summary rows for 'Other (Filtered)'.")
-        plot_title_suffix <- "for Non-'Exp1/2/3/6' Corpora (excl. LEXBOOSTFULL)" # Updated title
-        plot_filename_base <- "Other_Filtered"
-
-        # Generate Line Plot (Ribbons depend on SEM > 0)
-        line_plot <- plot_lines(summary_other_filtered, plot_title_suffix)
-        if (!is.null(line_plot)) {
-            line_filename <- file.path(output_dir, paste0("lineplot_", plot_filename_base, ".png"))
-            num_facets <- n_distinct(summary_other_filtered$corpus_file)
-            ggsave(line_filename, plot = line_plot, width = 8, height = max(4, 2 * num_facets),
-                   units = "in", dpi = 150, limitsize = FALSE)
-            message("  Line plot saved to ", line_filename)
-        } else { message("  Line plot generation failed or skipped.") }
-
-        # Generate Heatmap
-        heatmap_grob <- plot_heatmap_pheatmap(summary_other_filtered, plot_title_suffix)
-        if (!is.null(heatmap_grob)) {
-            heatmap_input_rows <- summary_other_filtered %>% distinct(corpus_file, target_structure) %>% nrow()
-            if (is.null(heatmap_input_rows) || !is.numeric(heatmap_input_rows) || heatmap_input_rows == 0) heatmap_input_rows <- 20
-            heatmap_filename <- file.path(output_dir, paste0("pheatmap_", plot_filename_base, ".png"))
-            png(heatmap_filename, width = 2000, height = max(800, 15 * heatmap_input_rows), res = 150)
-            grid::grid.newpage(); grid::grid.draw(heatmap_grob$gtable); dev.off()
-            message("  Heatmap saved to ", heatmap_filename)
-        } else { message("  Heatmap generation failed or skipped.") }
-
-        plot_end_time <- Sys.time()
-        message("  Plotting complete. Time taken: ", format(plot_end_time - plot_start_time))
-        rm(summary_other_filtered)
-    } else { message("--- Skipping plots for Non-'Exp1/2/3/6' (excluding LEXBOOSTFULL) corpora: No data after filtering ---") }
-    # Clean up the unfiltered 'other' subset if it exists
-    if(exists("summary_other_all")) rm(summary_other_all)
-} else { message("--- Skipping plots for Non-'Exp1/2/3/6' (excluding LEXBOOSTFULL) corpora: No base 'Other' data ---") }
-
-
-# --- 9. End Script ---
-if(exists("summary_df")) rm(summary_df); #gc()
+# --- 7. End Script ---
+# Clean up intermediate objects if desired
+# rm(df_raw, df_long, df_wide_summary, plot_data_pe_wide, plot_data_logp_compare)
+# gc() # Garbage collection
 
 overall_end_time <- Sys.time()
 final_date_time <- format(overall_end_time, "%Y-%m-%d %H:%M:%S %Z")
