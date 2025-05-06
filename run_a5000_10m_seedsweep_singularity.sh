@@ -133,9 +133,9 @@ do
             --per_device_train_batch_size 16 \
             --gradient_accumulation_steps 8 \
             \
-            --learning_rate 3e-4 \
+            --learning_rate 1e-5 \
             --lr_scheduler_type "cosine" \
-            --num_warmup_steps 100 \
+            --num_warmup_steps 1000 \
             --weight_decay 0.01 \
             --max_grad_norm 1.0 \
             --model_size "10m" \
