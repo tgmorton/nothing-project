@@ -8,7 +8,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4                # CPUs for evaluate.py
 #SBATCH --mem=32G                        # RAM for evaluate.py
-#SBATCH --gres=gpu:1                     # Request 1 GPU
 #SBATCH --time=03:00:00                  # Max time for a single evaluation run (adjust as needed)
 #SBATCH --mail-type=FAIL                 # Notify only on failure of an individual eval job
 #SBATCH --mail-user=your_email@example.com # <<< UPDATE THIS
