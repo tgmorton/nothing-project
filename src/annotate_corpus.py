@@ -145,36 +145,78 @@ def annotate_sentence(sentence_text, tokenizer, model, device, that_token_id, k_
 
 def process_file(filepath, output_filepath, bert_tokenizer, bert_model, spacy_nlp, device, that_token_id, k_top_val,
                  current_chunk_read_size_chars):
+    """
+    Reads a file in chunks, annotates its sentences using spaCy,
+    and writes incrementally to an output file.
+    """
+    tqdm.write(
+        f"--- Starting process_file for: {os.path.basename(filepath)} ---")  # Use tqdm.write for thread-safe printing with tqdm
     first_sentence_written_to_file = True
+
     try:
+        tqdm.write(f"[{os.path.basename(filepath)}] Attempting to get file size...")
         file_size = os.path.getsize(filepath)
+        tqdm.write(f"[{os.path.basename(filepath)}] File size: {file_size} bytes.")
+
+        # The tqdm description for the file is now handled by the outer loop in main()
+        # We use an inner tqdm to show progress through the current file's content (by bytes read)
         with open(output_filepath, 'w', encoding='utf-8') as f_out, \
                 open(filepath, 'r', encoding='utf-8') as f_in, \
                 tqdm(total=file_size, unit='B', unit_scale=True, desc=f"Reading {os.path.basename(filepath)}",
                      leave=False) as pbar_file_read:
 
+            chunk_num = 0
             while True:
+                chunk_num += 1
+                tqdm.write(
+                    f"[{os.path.basename(filepath)}] Attempting to read chunk {chunk_num} (up to {current_chunk_read_size_chars} chars)...")
                 text_chunk = f_in.read(current_chunk_read_size_chars)
-                if not text_chunk:
+                tqdm.write(f"[{os.path.basename(filepath)}] Read {len(text_chunk)} characters for chunk {chunk_num}.")
+
+                if not text_chunk:  # End of file
+                    tqdm.write(f"[{os.path.basename(filepath)}] End of file reached.")
                     break
-                pbar_file_read.update(len(text_chunk.encode('utf-8', errors='ignore')))
-                if not text_chunk.strip():
+
+                pbar_file_read.update(len(text_chunk.encode('utf-8', errors='ignore')))  # Progress by bytes
+
+                if not text_chunk.strip():  # If chunk is only whitespace
+                    tqdm.write(
+                        f"[{os.path.basename(filepath)}] Chunk {chunk_num} is whitespace, skipping spaCy processing.")
                     continue
+
+                tqdm.write(f"[{os.path.basename(filepath)}] Processing chunk {chunk_num} with spaCy...")
                 doc = spacy_nlp(text_chunk)
-                for sent in doc.sents:
+                tqdm.write(
+                    f"[{os.path.basename(filepath)}] spaCy processing for chunk {chunk_num} complete. Found {len(list(doc.sents))} potential sentences.")
+
+                sent_count_in_chunk = 0
+                for sent in doc.sents:  # No inner tqdm for sentences within chunk
+                    sent_count_in_chunk += 1
                     sentence_text = sent.text.strip()
                     if not sentence_text:
                         continue
+
+                    # tqdm.write(f"[{os.path.basename(filepath)}] Annotating sentence {sent_count_in_chunk} in chunk {chunk_num}...")
                     annotated_sentence = annotate_sentence(sentence_text, bert_tokenizer, bert_model, device,
                                                            that_token_id, k_top_val)
+
                     if not first_sentence_written_to_file:
                         f_out.write(" ")
                     f_out.write(annotated_sentence)
                     first_sentence_written_to_file = False
+                tqdm.write(
+                    f"[{os.path.basename(filepath)}] Finished annotating {sent_count_in_chunk} sentences in chunk {chunk_num}.")
+
+        tqdm.write(f"--- Finished processing and saved: {output_filepath} ---")
+
     except FileNotFoundError:
         tqdm.write(f"Error: Input file not found {filepath}")
     except Exception as e:
-        tqdm.write(f"Error processing file {filepath}: {e} (output may be incomplete or missing)")
+        import traceback
+        tqdm.write(f"Error processing file {filepath}: {e}\n{traceback.format_exc()}")  # Print full traceback
+        # Consider removing partially written file if error occurs:
+        # if os.path.exists(output_filepath):
+        #     os.remove(output_filepath)
 
 
 def main():
