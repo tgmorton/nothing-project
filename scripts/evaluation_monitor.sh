@@ -8,8 +8,8 @@
 #SBATCH --mem=32G                        # RAM for evaluate.py
 #SBATCH --gres=gpu:1                     # <<< Request 1 GPU for evaluation
 #SBATCH --time=7-00:00:00                   # Slightly longer than training
-#SBATCH --output=logs/default_eval_%j.out # Will be overridden by orchestrator
-#SBATCH --error=logs/default_eval_%j.err  # Will be overridden by orchestrator
+#SBATCH --output=../logs/default_eval_%j.out # Will be overridden by orchestrator
+#SBATCH --error=../logs/default_eval_%j.err  # Will be overridden by orchestrator
 #SBATCH --mail-type=END
 #SBATCH --mail-user=your_email@example.com # <<< UPDATE THIS
 
@@ -80,11 +80,11 @@ mkdir -p "$EVALUATION_RUN_LOGS_DIR"
 run_evaluation_script() {
     local checkpoint_dirname=$1 # e.g., checkpoint-400 or final_model
     # SHARED_OUTPUT_DIR_HOST is the host path to the shared output directory for the current seed's run
-    # It should be available as an environment variable exported by main_orchestrator.sbatch
+    # It should be available as an environment variable exported by main_orchestrator.sh
     local checkpoint_host_full_path="${SHARED_OUTPUT_DIR_HOST}/${checkpoint_dirname}"
 
     # CONTAINER_SHARED_OUTPUT_MOUNT is the mount point inside the container for SHARED_OUTPUT_DIR_HOST
-    # (e.g., /mnt_shared_output defined in evaluation_monitor.sbatch's singularity command)
+    # (e.g., /mnt_shared_output defined in evaluation_monitor.sh's singularity command)
     local checkpoint_container_path_for_eval_py="${CONTAINER_SHARED_OUTPUT_MOUNT}/${checkpoint_dirname}"
 
     # Define a unique output directory for this specific evaluation's results *on the host*
@@ -106,7 +106,7 @@ run_evaluation_script() {
     echo "--------------------------------------------------------------------"
 
     # Define paths for evaluate.py script *inside the container*
-    # CONTAINER_DATA_DIR_EVAL and CONTAINER_PRIMING_DIR_EVAL are mount points defined in evaluation_monitor.sbatch
+    # CONTAINER_DATA_DIR_EVAL and CONTAINER_PRIMING_DIR_EVAL are mount points defined in evaluation_monitor.sh
     local EVAL_PY_VALID_DATA_PATH_CONTAINER="${CONTAINER_DATA_DIR_EVAL}/processed/test_set_10m" # Adjust as needed
     local EVAL_PY_PRIMING_DATA_PATH_CONTAINER="${CONTAINER_PRIMING_DIR_EVAL}/priming-corpuses"  # Adjust as needed
     local EVAL_PY_SCRIPT_PATH_CONTAINER="${CONTAINER_WORKSPACE}/src/evaluate.py" # Path to evaluate.py inside container
@@ -140,7 +140,7 @@ run_evaluation_script() {
     PYTHON_ARGS+=( "--use_amp" ) # Example: assume AMP is desired if model supports it
 
     # Neptune arguments for the evaluate.py script
-    # SINGULARITYENV_NEPTUNE_API_TOKEN and SINGULARITYENV_NEPTUNE_PROJECT are exported globally in evaluation_monitor.sbatch
+    # SINGULARITYENV_NEPTUNE_API_TOKEN and SINGULARITYENV_NEPTUNE_PROJECT are exported globally in evaluation_monitor.sh
     # evaluate.py will pick those up.
     # SHARED_RUN_ID already contains seed information (e.g., s42_jID_tsTIMESTAMP)
     # Construct a specific Neptune run name for this evaluation instance.
@@ -170,7 +170,7 @@ run_evaluation_script() {
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
     # Define log file for this specific Singularity execution of evaluate.py
-    # EVALUATION_RUN_LOGS_DIR is defined globally in evaluation_monitor.sbatch (e.g., "${SHARED_OUTPUT_DIR_HOST}/evaluation_job_logs")
+    # EVALUATION_RUN_LOGS_DIR is defined globally in evaluation_monitor.sh (e.g., "${SHARED_OUTPUT_DIR_HOST}/evaluation_job_logs")
     local eval_py_execution_log="${EVALUATION_RUN_LOGS_DIR}/eval_py_${checkpoint_dirname}_$(date +%H%M%S).log"
     echo "evaluate.py execution log will be: ${eval_py_execution_log}"
 

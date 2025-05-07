@@ -1,5 +1,5 @@
 #!/bin/bash
-# training_job.sbatch
+# training_job.sh
 # Job name, output/error paths will be overridden by main_orchestrator.
 #SBATCH --job-name=a5k_training_job
 #SBATCH --partition=general_gpu_a5000   # Target A5000 partition
@@ -95,7 +95,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # --- Execute Singularity Command ---
 # Note: --local_eval and related args are *omitted* from the python3 train.py call.
-# train.py will default local_eval to False, and evaluation will be handled by evaluation_monitor.sbatch.
+# train.py will default local_eval to False, and evaluation will be handled by evaluation_monitor.sh.
 singularity exec --nv \
     -B "${HOST_PROJECT_DIR}":"${CONTAINER_WORKSPACE}" \
     -B "${HOST_DATA_BASE_DIR}":"${CONTAINER_DATA_DIR}" \

@@ -1,5 +1,5 @@
 #!/bin/bash
-# sweep_coordinator.sbatch
+# sweep_coordinator.sh
 
 # === SBATCH Directives for Seed Sweep Coordinator ===
 #SBATCH --job-name=coord_seed_sweep
@@ -9,8 +9,8 @@
 #SBATCH --cpus-per-task=1            # Minimal CPUs for the coordinator
 #SBATCH --mem=4G                     # Minimal RAM for the coordinator
 #SBATCH --time=7-00:00:00            # <<< Max time for the ENTIRE sweep (e.g., 9 runs * ~15-24h/run)
-#SBATCH --output=logs/sweep_coordinator_%x_%j.out
-#SBATCH --error=logs/sweep_coordinator_%x_%j.err
+#SBATCH --output=../logs/sweep_coordinator_%x_%j.out
+#SBATCH --error=../logs/sweep_coordinator_%x_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=your_email@example.com # <<< UPDATE THIS
 
@@ -24,7 +24,7 @@ echo "Host Project Dir (will be passed to children): ${HOST_PROJECT_DIR:-/home/A
 
 # --- Define Base Paths ---
 # HOST_PROJECT_DIR can be overridden by exporting it when submitting this sweep_coordinator job
-# e.g., sbatch --export=ALL,HOST_PROJECT_DIR="/alt/project/path" sweep_coordinator.sbatch
+# e.g., sbatch --export=ALL,HOST_PROJECT_DIR="/alt/project/path" sweep_coordinator.sh
 DEFAULT_HOST_PROJECT_DIR="/home/AD/thmorton/nothing-project" # <<< UPDATE THIS
 HOST_PROJECT_DIR="${HOST_PROJECT_DIR:-${DEFAULT_HOST_PROJECT_DIR}}"
 SWEEP_CHILD_LOGS_DIR="${HOST_PROJECT_DIR}/logs/sweep_child_job_logs" # Centralized logs for jobs launched by this sweep
@@ -93,10 +93,10 @@ wait_for_slurm_job() {
 SEEDS_TO_RUN=(1 2 3 4 5 6 7 8 9)
 # Or for testing: SEEDS_TO_RUN=(42)
 echo "Starting sweep for seeds: ${SEEDS_TO_RUN[*]}"
-PATH_TO_MAIN_ORCHESTRATOR="${HOST_PROJECT_DIR}/scripts/main_orchestrator.sbatch" # <<< UPDATE THIS PATH
+PATH_TO_MAIN_ORCHESTRATOR="${HOST_PROJECT_DIR}/scripts/main_orchestrator.sh" # <<< UPDATE THIS PATH
 
 if [ ! -f "$PATH_TO_MAIN_ORCHESTRATOR" ]; then
-    echo "CRITICAL ERROR: main_orchestrator.sbatch not found at ${PATH_TO_MAIN_ORCHESTRATOR}. Exiting."
+    echo "CRITICAL ERROR: main_orchestrator.sh not found at ${PATH_TO_MAIN_ORCHESTRATOR}. Exiting."
     exit 1
 fi
 
@@ -112,7 +112,7 @@ do
     # $SLURM_JOB_ID here is the ID of the sweep_coordinator job itself.
     MAIN_ORCH_JOB_NAME="orch_s${CURRENT_SEED_VAL}_sw${SLURM_JOB_ID}"
 
-    # Submit main_orchestrator.sbatch for the current seed
+    # Submit main_orchestrator.sh for the current seed
     # Pass HOST_PROJECT_DIR and the CURRENT_SEED_VAL
     echo "Coordinator: Submitting main_orchestrator for seed ${CURRENT_SEED_VAL}..."
     SUBMIT_COMMAND="sbatch \
