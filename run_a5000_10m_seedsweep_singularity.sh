@@ -98,7 +98,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # === Training Loop ===
 echo "Starting sequential training for Seeds 1 to 9..."
 
-for SEED in {4..9}
+for SEED in {1..9}
 do
     echo "---------------------------------------------"
     echo "--- Starting Training for Seed ${SEED} ---"
@@ -133,7 +133,7 @@ do
             --per_device_train_batch_size 8 \
             --gradient_accumulation_steps 16 \
             \
-            --learning_rate 1e-5 \
+            --learning_rate 3e-4 \
             --lr_scheduler_type "cosine" \
             --num_warmup_steps 1000 \
             --weight_decay 0.01 \
