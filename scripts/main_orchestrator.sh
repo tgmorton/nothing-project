@@ -1,5 +1,5 @@
 #!/bin/bash
-# main_orchestrator.sbatch
+# main_orchestrator.sh
 # Job name, output/error paths will be overridden if launched by sweep_coordinator
 # or can be set here for standalone runs.
 #SBATCH --job-name=main_orch_standalone
@@ -10,8 +10,8 @@
 #SBATCH --mem=4G
 #SBATCH --time=7-00:00:00            # Max time for ONE full pipeline (train + eval monitor)
                                   # Slightly less than training_job's time to allow it to finish.
-#SBATCH --output=logs/main_orchestrator_%x_%j.out # Default for standalone
-#SBATCH --error=logs/main_orchestrator_%x_%j.err  # Default for standalone
+#SBATCH --output=../logs/main_orchestrator_%x_%j.out # Default for standalone
+#SBATCH --error=../logs/main_orchestrator_%x_%j.err  # Default for standalone
 #SBATCH --mail-type=END,FAIL      # Notify on end/fail of this orchestrator job
 #SBATCH --mail-user=your_email@example.com # <<< UPDATE THIS
 
@@ -71,11 +71,11 @@ mkdir -p "${CHILD_JOB_LOGS_DIR}"
 echo "Ensured shared output and child log directories exist for this run."
 
 # Define paths to child sbatch scripts (relative to HOST_PROJECT_DIR)
-PATH_TO_TRAINING_JOB="${HOST_PROJECT_DIR}/scripts/training_job.sbatch" # <<< UPDATE THIS PATH
-PATH_TO_EVAL_MONITOR_JOB="${HOST_PROJECT_DIR}/scripts/evaluation_monitor.sbatch" # <<< UPDATE THIS PATH
+PATH_TO_TRAINING_JOB="${HOST_PROJECT_DIR}/scripts/training_job.sh" # <<< UPDATE THIS PATH
+PATH_TO_EVAL_MONITOR_JOB="${HOST_PROJECT_DIR}/scripts/evaluation_monitor.sh" # <<< UPDATE THIS PATH
 
-if [ ! -f "$PATH_TO_TRAINING_JOB" ]; then echo "CRITICAL ERROR: training_job.sbatch not found at ${PATH_TO_TRAINING_JOB}"; exit 1; fi
-if [ ! -f "$PATH_TO_EVAL_MONITOR_JOB" ]; then echo "CRITICAL ERROR: evaluation_monitor.sbatch not found at ${PATH_TO_EVAL_MONITOR_JOB}"; exit 1; fi
+if [ ! -f "$PATH_TO_TRAINING_JOB" ]; then echo "CRITICAL ERROR: training_job.sh not found at ${PATH_TO_TRAINING_JOB}"; exit 1; fi
+if [ ! -f "$PATH_TO_EVAL_MONITOR_JOB" ]; then echo "CRITICAL ERROR: evaluation_monitor.sh not found at ${PATH_TO_EVAL_MONITOR_JOB}"; exit 1; fi
 
 
 # --- Launch Training Job ---
