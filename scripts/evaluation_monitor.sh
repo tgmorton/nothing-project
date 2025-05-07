@@ -60,7 +60,7 @@ export SINGULARITYENV_NEPTUNE_TRAINING_RUN_NAME="train_${SHARED_RUN_ID}"
 
 
 # --- Define Paths on Host (using orchestrator-provided HOST_PROJECT_DIR) ---
-HOST_SIF_PATH="${HOST_PROJECT_DIR}/python39_annotate.sif" # <<< UPDATE if SIF name/location differs
+HOST_SIF_PATH="${HOST_PROJECT_DIR}/python39_llm_env.sif" # <<< UPDATE if SIF name/location differs
 HOST_DATA_BASE_DIR="${HOST_PROJECT_DIR}/data"
 HOST_PRIMING_BASE_DIR="${HOST_PROJECT_DIR}/eval"
 
