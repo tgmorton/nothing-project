@@ -1,9 +1,0 @@
-# requirements.txt
-
-# Core ML/Data Library
-torch>=2.0.0
-numpy>=1.20.0
-transformers>=4.20.0
-datasets>=2.0.0
-tqdm>=4.64.0
-neptune>=1.0.0
