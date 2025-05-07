@@ -186,11 +186,18 @@ def process_file(filepath, output_filepath, bert_tokenizer, bert_model, spacy_nl
 
                 tqdm.write(f"[{os.path.basename(filepath)}] Processing chunk {chunk_num} with spaCy...")
                 doc = spacy_nlp(text_chunk)
+                sentences_in_chunk = list(doc.sents)  # Get total count for tqdm
                 tqdm.write(
-                    f"[{os.path.basename(filepath)}] spaCy processing for chunk {chunk_num} complete. Found {len(list(doc.sents))} potential sentences.")
+                        f"[{os.path.basename(filepath)}] spaCy processing for chunk {chunk_num} complete. Found {len(sentences_in_chunk)} sentences.")
 
                 sent_count_in_chunk = 0
-                for sent in doc.sents:  # No inner tqdm for sentences within chunk
+                for sent in tqdm(sentences_in_chunk,
+                                 desc=f"Annotating chunk {chunk_num}/{num_total_chunks_approx}",
+                                 # Need num_total_chunks_approx
+                                 leave=False,
+                                 unit="sent",
+                                 position=2,  # For nesting under file_read bar
+                                 dynamic_ncols=True):  # No inner tqdm for sentences within chunk
                     sent_count_in_chunk += 1
                     sentence_text = sent.text.strip()
                     if not sentence_text:
