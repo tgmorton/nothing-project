@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4                # CPUs for the monitor and evaluate.py
 #SBATCH --mem=32G                        # RAM for evaluate.py
 #SBATCH --gres=gpu:1                     # <<< Request 1 GPU for evaluation
-#SBATCH --time=24:30:00                  # Slightly longer than training
+#SBATCH --time=7-00:00:00                   # Slightly longer than training
 #SBATCH --output=logs/default_eval_%j.out # Will be overridden by orchestrator
 #SBATCH --error=logs/default_eval_%j.err  # Will be overridden by orchestrator
 #SBATCH --mail-type=END
@@ -75,79 +75,130 @@ CONTAINER_SHARED_OUTPUT_MOUNT="/mnt_shared_output" # Mount point for SHARED_OUTP
 EVALUATION_RUN_LOGS_DIR="${SHARED_OUTPUT_DIR}/evaluation_job_logs"
 mkdir -p "$EVALUATION_RUN_LOGS_DIR"
 
-# --- Function to run evaluation using evaluate.py ---
+
+# --- Function to run evaluation ---
 run_evaluation_script() {
-    local checkpoint_dirname=$1 # e.g., "checkpoint-1200" or "final_model"
-    # Construct full path to the checkpoint *inside the container*
-    local container_checkpoint_path="${CONTAINER_SHARED_OUTPUT_MOUNT}/${checkpoint_dirname}"
+    local checkpoint_dirname=$1 # e.g., checkpoint-400 or final_model
+    # SHARED_OUTPUT_DIR_HOST is the host path to the shared output directory for the current seed's run
+    # It should be available as an environment variable exported by main_orchestrator.sbatch
+    local checkpoint_host_full_path="${SHARED_OUTPUT_DIR_HOST}/${checkpoint_dirname}"
 
-    # Define a unique output directory for this specific evaluation run *on the host*
-    local host_eval_output_subdir="${SHARED_OUTPUT_DIR}/eval_results/${checkpoint_dirname}"
-    mkdir -p "$host_eval_output_subdir"
-    # Define where this subdir will be mounted *inside the container* for evaluate.py to write to
-    local container_eval_output_path="/eval_output_target"
+    # CONTAINER_SHARED_OUTPUT_MOUNT is the mount point inside the container for SHARED_OUTPUT_DIR_HOST
+    # (e.g., /mnt_shared_output defined in evaluation_monitor.sbatch's singularity command)
+    local checkpoint_container_path_for_eval_py="${CONTAINER_SHARED_OUTPUT_MOUNT}/${checkpoint_dirname}"
 
-    echo "-----------------------------------------------------"
-    echo "$(date): Preparing to evaluate: ${checkpoint_dirname}"
-    echo "Host Checkpoint Dir: ${SHARED_OUTPUT_DIR}/${checkpoint_dirname}"
-    echo "Container Checkpoint Path for evaluate.py: ${container_checkpoint_path}"
-    echo "Host Evaluation Output Dir for this run: ${host_eval_output_subdir}"
-    echo "Container Evaluation Output Path for evaluate.py: ${container_eval_output_path}"
-    echo "-----------------------------------------------------"
+    # Define a unique output directory for this specific evaluation's results *on the host*
+    local host_eval_specific_results_dir="${SHARED_OUTPUT_DIR_HOST}/eval_results/${checkpoint_dirname}"
+    mkdir -p "$host_eval_specific_results_dir"
+    # Define where this specific results directory will be mounted *inside the container* for evaluate.py to write to
+    local container_eval_specific_results_target_dir="/eval_output_target"
 
-    # Paths for evaluate.py script *inside the container*
-    local EVAL_PY_VALID_DATA_PATH="${CONTAINER_DATA_DIR_EVAL}/processed/test_set_10m"
-    local EVAL_PY_PRIMING_DATA_PATH="${CONTAINER_PRIMING_DIR_EVAL}/priming-corpuses"
-    local EVAL_PY_SCRIPT_PATH="${CONTAINER_WORKSPACE}/src/evaluate.py"
+
+    echo # Blank line for readability
+    echo "--------------------------------------------------------------------"
+    echo "$(date): EVALUATION MONITOR: Preparing to evaluate checkpoint: ${checkpoint_dirname}"
+    echo "Checkpoint Source (Host): ${checkpoint_host_full_path}"
+    echo "Checkpoint Path for evaluate.py (Container): ${checkpoint_container_path_for_eval_py}"
+    echo "Evaluation Results Output Dir (Host): ${host_eval_specific_results_dir}"
+    echo "Evaluation Results Output Target (Container): ${container_eval_specific_results_target_dir}"
+    echo "Shared Run ID for this eval context: ${SHARED_RUN_ID}"
+    echo "Seed for this eval context: ${SEED_FOR_EVAL:-"Not Set"}" # SEED_FOR_EVAL comes from main_orchestrator
+    echo "--------------------------------------------------------------------"
+
+    # Define paths for evaluate.py script *inside the container*
+    # CONTAINER_DATA_DIR_EVAL and CONTAINER_PRIMING_DIR_EVAL are mount points defined in evaluation_monitor.sbatch
+    local EVAL_PY_VALID_DATA_PATH_CONTAINER="${CONTAINER_DATA_DIR_EVAL}/processed/test_set_10m" # Adjust as needed
+    local EVAL_PY_PRIMING_DATA_PATH_CONTAINER="${CONTAINER_PRIMING_DIR_EVAL}/priming-corpuses"  # Adjust as needed
+    local EVAL_PY_SCRIPT_PATH_CONTAINER="${CONTAINER_WORKSPACE}/src/evaluate.py" # Path to evaluate.py inside container
 
     # Construct arguments for evaluate.py
     PYTHON_ARGS=()
-    PYTHON_ARGS+=( "--checkpoint_path" "${container_checkpoint_path}" )
-    PYTHON_ARGS+=( "--output_dir" "${container_eval_output_path}" ) # evaluate.py writes here
+    PYTHON_ARGS+=( "--checkpoint_path" "${checkpoint_container_path_for_eval_py}" )
+    PYTHON_ARGS+=( "--output_dir" "${container_eval_specific_results_target_dir}" ) # evaluate.py writes here
+    PYTHON_ARGS+=( "--checkpoint_label" "${checkpoint_dirname}" ) # Pass the checkpoint name as a label
 
-    PYTHON_ARGS+=( "--run_standard_eval" ) # Assuming these are flags in your evaluate.py
-    PYTHON_ARGS+=( "--validation_dataset_path" "$EVAL_PY_VALID_DATA_PATH" )
-    PYTHON_ARGS+=( "--run_priming_eval" )  # Assuming these are flags
-    PYTHON_ARGS+=( "--priming_eval_dir_path" "$EVAL_PY_PRIMING_DATA_PATH" )
+    # Add flags/paths conditionally based on what evaluations to run
+    # These flags are for evaluate.py
+    PYTHON_ARGS+=( "--run_standard_eval" ) # Example: always run standard eval
+    PYTHON_ARGS+=( "--validation_dataset_path" "$EVAL_PY_VALID_DATA_PATH_CONTAINER" )
+    PYTHON_ARGS+=( "--run_priming_eval" )  # Example: always run priming eval
+    PYTHON_ARGS+=( "--priming_eval_dir_path" "$EVAL_PY_PRIMING_DATA_PATH_CONTAINER" )
 
-    PYTHON_ARGS+=( "--seed" "${SEED:-42}" ) # Use SEED from env if set, else default
-    PYTHON_ARGS+=( "--per_device_eval_batch_size" "16" ) # Adjust as needed
-    PYTHON_ARGS+=( "--priming_per_device_eval_batch_size" "8" ) # Adjust
-    PYTHON_ARGS+=( "--num_workers" "${SLURM_CPUS_PER_TASK:-4}" )
-    PYTHON_ARGS+=( "--use_amp" ) # If evaluate.py supports it
+    # Pass the seed for reproducibility within evaluate.py (e.g., for dataset sampling if any)
+    # SEED_FOR_EVAL is expected to be set by main_orchestrator via --export
+    if [ -n "$SEED_FOR_EVAL" ]; then
+        PYTHON_ARGS+=( "--seed" "$SEED_FOR_EVAL" )
+    else
+        PYTHON_ARGS+=( "--seed" "42" ) # Default seed for evaluate.py if not explicitly passed
+        logger "WARNING (Evaluation Monitor): SEED_FOR_EVAL not set, using default 42 for evaluate.py."
+    fi
 
-    # Neptune arguments for the evaluation run
-    # Each evaluation can be a new Neptune run, tagged to link to the main training run.
-    local neptune_eval_run_name="eval_${SHARED_RUN_ID}_${checkpoint_dirname}"
-    local neptune_eval_tags="evaluation ${SHARED_RUN_ID} ${checkpoint_dirname} p6000_eval" # Customize
+    # Other evaluation parameters for evaluate.py
+    PYTHON_ARGS+=( "--per_device_eval_batch_size" "16" ) # Example
+    PYTHON_ARGS+=( "--priming_per_device_eval_batch_size" "8" )  # Example
+    PYTHON_ARGS+=( "--num_workers" "${SLURM_CPUS_PER_TASK:-4}" ) # Use Slurm allocated CPUs
+    PYTHON_ARGS+=( "--use_amp" ) # Example: assume AMP is desired if model supports it
 
-    PYTHON_ARGS+=( "--neptune_run_name" "${neptune_eval_run_name}" )
-    PYTHON_ARGS+=( "--neptune_tags" ${neptune_eval_tags} )
-    # SINGULARITYENV_NEPTUNE_PROJECT is already exported globally for singularity
+    # Neptune arguments for the evaluate.py script
+    # SINGULARITYENV_NEPTUNE_API_TOKEN and SINGULARITYENV_NEPTUNE_PROJECT are exported globally in evaluation_monitor.sbatch
+    # evaluate.py will pick those up.
+    # SHARED_RUN_ID already contains seed information (e.g., s42_jID_tsTIMESTAMP)
+    # Construct a specific Neptune run name for this evaluation instance.
+    local neptune_eval_run_name_for_py="eval_${SHARED_RUN_ID}_${checkpoint_dirname}"
+    PYTHON_ARGS+=( "--neptune_run_name" "${neptune_eval_run_name_for_py}" )
+
+    # Construct Neptune tags, including an explicit seed tag if SEED_FOR_EVAL is available
+    local neptune_eval_tags_list=("evaluation" "${SHARED_RUN_ID}" "${checkpoint_dirname}")
+    if [ -n "$SEED_FOR_EVAL" ]; then
+        neptune_eval_tags_list+=("seed_${SEED_FOR_EVAL}")
+    fi
+    # Add other relevant tags if needed, e.g., GPU type if it varies for eval
+    # neptune_eval_tags_list+=("p6000_eval_node")
+    local neptune_tags_arg_for_py=$(IFS=" "; echo "${neptune_eval_tags_list[*]}") # Convert bash array to space-separated string
+    PYTHON_ARGS+=( "--neptune_tags" ${neptune_tags_arg_for_py} ) # Pass as multiple arguments if tags contain spaces
+
+    # If neptune_project is explicitly passed to evaluate.py (it will use SINGULARITYENV_ otherwise)
+    if [ -n "${SINGULARITYENV_NEPTUNE_PROJECT:-}" ]; then
+         PYTHON_ARGS+=( "--neptune_project" "${SINGULARITYENV_NEPTUNE_PROJECT}" )
+    fi
+    # Note: SINGULARITYENV_NEPTUNE_TRAINING_RUN_NAME is also available if evaluate.py wants to use it
 
     echo "Arguments for evaluate.py:"
-    printf "* %q\n" "${PYTHON_ARGS[@]}"
+    printf "  %q\n" "${PYTHON_ARGS[@]}" # Print each argument quoted on a new line for clarity
 
-    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True # If needed by evaluate.py
+    # Set PyTorch CUDA Allocator Config if needed by evaluate.py
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-    # Log file for this specific evaluation execution
-    local eval_exec_log="${EVALUATION_RUN_LOGS_DIR}/eval_${checkpoint_dirname}_$(date +%H%M%S).log"
+    # Define log file for this specific Singularity execution of evaluate.py
+    # EVALUATION_RUN_LOGS_DIR is defined globally in evaluation_monitor.sbatch (e.g., "${SHARED_OUTPUT_DIR_HOST}/evaluation_job_logs")
+    local eval_py_execution_log="${EVALUATION_RUN_LOGS_DIR}/eval_py_${checkpoint_dirname}_$(date +%H%M%S).log"
+    echo "evaluate.py execution log will be: ${eval_py_execution_log}"
 
+    # Execute Singularity for evaluate.py
+    # Bind mounts:
+    # HOST_PROJECT_DIR -> CONTAINER_WORKSPACE (for src/evaluate.py)
+    # HOST_DATA_BASE_DIR -> CONTAINER_DATA_DIR_EVAL (for validation_dataset_path)
+    # HOST_PRIMING_BASE_DIR -> CONTAINER_PRIMING_DIR_EVAL (for priming_eval_dir_path)
+    # SHARED_OUTPUT_DIR_HOST -> CONTAINER_SHARED_OUTPUT_MOUNT (for --checkpoint_path)
+    # host_eval_specific_results_dir -> container_eval_specific_results_target_dir (for --output_dir of evaluate.py)
     singularity exec --nv \
         -B "${HOST_PROJECT_DIR}":"${CONTAINER_WORKSPACE}" \
         -B "${HOST_DATA_BASE_DIR}":"${CONTAINER_DATA_DIR_EVAL}" \
         -B "${HOST_PRIMING_BASE_DIR}":"${CONTAINER_PRIMING_DIR_EVAL}" \
-        -B "${SHARED_OUTPUT_DIR}":"${CONTAINER_SHARED_OUTPUT_MOUNT}" \
-        -B "${host_eval_output_subdir}":"${container_eval_output_path}" \
+        -B "${SHARED_OUTPUT_DIR_HOST}":"${CONTAINER_SHARED_OUTPUT_MOUNT}" \
+        -B "${host_eval_specific_results_dir}":"${container_eval_specific_results_target_dir}" \
         "${HOST_SIF_PATH}" \
-        python3 "${EVAL_PY_SCRIPT_PATH}" "${PYTHON_ARGS[@]}" > "$eval_exec_log" 2>&1
+        python3 "${EVAL_PY_SCRIPT_PATH_CONTAINER}" "${PYTHON_ARGS[@]}" > "$eval_py_execution_log" 2>&1
 
-    if [ $? -eq 0 ]; then
-        echo "$(date): Evaluation for ${checkpoint_dirname} SUCCEEDED. Log: ${eval_exec_log}"
+    local exit_code=$?
+    if [ $exit_code -eq 0 ]; then
+        echo "$(date): EVALUATION MONITOR: evaluate.py for ${checkpoint_dirname} SUCCEEDED. Log: ${eval_py_execution_log}"
     else
-        echo "$(date): Evaluation for ${checkpoint_dirname} FAILED. Check log: ${eval_exec_log}"
+        echo "$(date): EVALUATION MONITOR: evaluate.py for ${checkpoint_dirname} FAILED with exit code ${exit_code}. Check log: ${eval_py_execution_log}"
+        # Optionally, you could add logic here to retry or mark the overall run as problematic.
     fi
-    echo "-----------------------------------------------------"
+    echo "--------------------------------------------------------------------"
+    echo # Blank line for readability
 }
 
 # --- Monitoring Loop ---
