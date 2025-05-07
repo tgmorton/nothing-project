@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=4  # annotate_corpus.py is single-threaded but benefits from multi-core for data loading/pytorch
 #SBATCH --mem=32G          # Increased slightly for potentially large files in memory during chunking, 24G might still be fine
 #SBATCH --time=24:00:00    # Adjust based on your corpus size
-#SBATCH --output=..logs/annotate_corpus_%x_%j.out
-#SBATCH --error=..logs/annotate_corpus_%x_%j.err
+#SBATCH --output=../logs/annotate_corpus_%x_%j.out
+#SBATCH --error=../logs/annotate_corpus_%x_%j.err
 
 # Exit on error
 set -e
