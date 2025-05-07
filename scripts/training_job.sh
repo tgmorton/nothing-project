@@ -99,7 +99,6 @@ singularity exec --nv \
     -B "${HOST_PROJECT_DIR}":"${CONTAINER_WORKSPACE}" \
     -B "${HOST_DATA_BASE_DIR}":"${CONTAINER_DATA_DIR}" \
     -B "${SHARED_OUTPUT_DIR_HOST}":"${CONTAINER_OUTPUT_TARGET_DIR}" \
-    # -B "${HOST_PRIMING_BASE_DIR}":"${CONTAINER_PRIMING_TARGET_DIR}" # Only if train.py uses priming files non-eval
     "${HOST_SIF_PATH}" \
     python3 "${CONTAINER_WORKSPACE}/src/train.py" \
         --model "gpt2" \
@@ -124,9 +123,6 @@ singularity exec --nv \
         \
         --logging_steps 50 \
         --save_steps 100 \
-        # --eval_steps 100 # train.py will ignore this if local_eval=False (default)
-        # --priming_eval_steps 100 # train.py will ignore this if local_eval=False
-        \
         ${NEPTUNE_PROJECT_ARG_FOR_TRAINPY} \
         --neptune_run_name "${NEPTUNE_RUN_NAME_FOR_TRAINPY}" \
         --neptune_tags ${NEPTUNE_TAGS_STRING}
