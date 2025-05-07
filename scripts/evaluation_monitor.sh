@@ -6,7 +6,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4                # CPUs for the monitor and evaluate.py
 #SBATCH --mem=32G                        # RAM for evaluate.py
-#SBATCH --gres=gpu:1                     # <<< Request 1 GPU for evaluation
 #SBATCH --time=7-00:00:00                   # Slightly longer than training
 #SBATCH --output=../logs/default_eval_%j.out # Will be overridden by orchestrator
 #SBATCH --error=../logs/default_eval_%j.err  # Will be overridden by orchestrator
