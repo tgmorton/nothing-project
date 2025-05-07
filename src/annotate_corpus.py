@@ -6,24 +6,20 @@ import argparse
 import spacy
 from tqdm import tqdm
 
-# Import autocast for mixed precision if CUDA is available
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning, module="torch._jit_internal")
+
 if torch.cuda.is_available():
     from torch.cuda.amp import autocast
 else:
-    # Define a dummy autocast context manager if CUDA is not available
-    # so the 'with autocast():' line doesn't break on CPU-only setups.
-    class autocast:
-        def __init__(self, enabled=True): pass
+    class autocast:  # Dummy for CPU
+        def __init__(self, enabled=True): self.enabled = enabled
 
         def __enter__(self): pass
 
         def __exit__(self, *args): pass
 
-import warnings
-
-warnings.filterwarnings("ignore", category=UserWarning, module="torch._jit_internal")
-
-# --- Configuration ---
 BERT_MODEL_NAME = 'bert-base-uncased'
 SPACY_MODEL_NAME = 'en_core_web_sm'
 K_TOP = 10
@@ -32,6 +28,7 @@ DEFAULT_CHUNK_READ_SIZE_CHARS = 500_000
 
 
 def get_device():
+    # ... (function remains the same) ...
     if torch.cuda.is_available():
         print("Using GPU.")
         return torch.device("cuda")
@@ -41,6 +38,7 @@ def get_device():
 
 
 def load_bert_model_and_tokenizer(model_name, device):
+    # ... (function remains the same) ...
     print(f"Loading BERT model: {model_name}...")
     tokenizer = BertTokenizer.from_pretrained(model_name)
     model = BertForMaskedLM.from_pretrained(model_name)
@@ -51,6 +49,7 @@ def load_bert_model_and_tokenizer(model_name, device):
 
 
 def load_spacy_model(model_name):
+    # ... (function remains the same, including nlp.max_length adjustment and sentencizer add) ...
     print(f"Loading spaCy model: {model_name}...")
     try:
         disabled_pipes = ["parser", "ner", "tagger", "lemmatizer", "attribute_ruler"]
@@ -58,16 +57,18 @@ def load_spacy_model(model_name):
 
         active_sentence_segmenters = any(pipe_name in ["senter", "sentencizer"] for pipe_name in nlp.pipe_names)
         if not active_sentence_segmenters:
-            print(f"Pipeline {nlp.pipe_names} lacks an active sentence segmenter. Adding 'sentencizer'.")
+            tqdm.write(
+                f"Pipeline {nlp.pipe_names} lacks an active sentence segmenter. Adding 'sentencizer'.")  # Use tqdm.write
             try:
                 nlp.add_pipe('sentencizer', first=True)
-                print("Successfully added 'sentencizer' to the spaCy pipeline.")
+                tqdm.write("Successfully added 'sentencizer' to the spaCy pipeline.")  # Use tqdm.write
             except Exception as add_pipe_e:
-                print(f"Failed to add 'sentencizer': {add_pipe_e}. Sentence segmentation may fail.")
+                tqdm.write(
+                    f"Failed to add 'sentencizer': {add_pipe_e}. Sentence segmentation may fail.")  # Use tqdm.write
         elif 'senter' in nlp.pipe_names:
-            print(f"'senter' component is active in pipeline: {nlp.pipe_names}.")
+            tqdm.write(f"'senter' component is active in pipeline: {nlp.pipe_names}.")  # Use tqdm.write
         elif 'sentencizer' in nlp.pipe_names:
-            print(f"'sentencizer' component is active in pipeline: {nlp.pipe_names}.")
+            tqdm.write(f"'sentencizer' component is active in pipeline: {nlp.pipe_names}.")  # Use tqdm.write
 
         new_max_length = 12 * 1024 * 1024
         if nlp.max_length < new_max_length:
@@ -87,8 +88,8 @@ def load_spacy_model(model_name):
     return nlp
 
 
-# Modified to include AMP (autocast)
 def annotate_sentence(sentence_text, tokenizer, model, device, that_token_id, k_top_val):
+    # ... (function remains the same) ...
     original_words = sentence_text.split()
     if len(original_words) < 2:
         return " ".join(original_words)
@@ -96,8 +97,6 @@ def annotate_sentence(sentence_text, tokenizer, model, device, that_token_id, k_
     output_word_list = list(original_words)
     bert_context_word_list = list(original_words)
     insertions_made_count = 0
-
-    # Determine if autocast should be enabled
     enable_amp = (device.type == 'cuda')
 
     for i in range(len(original_words) - 1):
@@ -107,31 +106,25 @@ def annotate_sentence(sentence_text, tokenizer, model, device, that_token_id, k_
         masked_input_string = " ".join(temp_bert_input_words)
 
         inputs = tokenizer.encode_plus(
-            masked_input_string,
-            return_tensors='pt',
-            add_special_tokens=True,
-            truncation=True,
-            max_length=tokenizer.model_max_length
+            masked_input_string, return_tensors='pt', add_special_tokens=True,
+            truncation=True, max_length=tokenizer.model_max_length
         )
         input_ids = inputs['input_ids'].to(device)
         attention_mask = inputs['attention_mask'].to(device)
 
         try:
             mask_token_indices = (input_ids[0] == tokenizer.mask_token_id).nonzero(as_tuple=True)[0]
-            if len(mask_token_indices) == 0:
-                continue
+            if not mask_token_indices.numel(): continue  # Check if empty
             mask_token_index = mask_token_indices[0]
         except IndexError:
             continue
 
         with torch.no_grad():
-            # Use autocast for mixed precision if on CUDA and enabled
             with autocast(enabled=enable_amp):
                 outputs = model(input_ids, attention_mask=attention_mask)
-            predictions = outputs.logits  # Logits are usually float32 by default after autocast
+            predictions = outputs.logits
 
-        if mask_token_index >= predictions.shape[1]:
-            continue
+        if mask_token_index >= predictions.shape[1]: continue
 
         mask_logits = predictions[0, mask_token_index, :]
         top_k_indices = torch.topk(mask_logits, k_top_val, dim=-1).indices.tolist()
@@ -143,67 +136,58 @@ def annotate_sentence(sentence_text, tokenizer, model, device, that_token_id, k_
     return " ".join(output_word_list)
 
 
+# Modified process_file with more granular progress bar
 def process_file(filepath, output_filepath, bert_tokenizer, bert_model, spacy_nlp, device, that_token_id, k_top_val,
                  current_chunk_read_size_chars):
-    """
-    Reads a file in chunks, annotates its sentences using spaCy,
-    and writes incrementally to an output file.
-    """
-    tqdm.write(
-        f"--- Starting process_file for: {os.path.basename(filepath)} ---")  # Use tqdm.write for thread-safe printing with tqdm
+    tqdm.write(f"--- Starting process_file for: {os.path.basename(filepath)} ---")
     first_sentence_written_to_file = True
 
     try:
-        tqdm.write(f"[{os.path.basename(filepath)}] Attempting to get file size...")
         file_size = os.path.getsize(filepath)
         tqdm.write(f"[{os.path.basename(filepath)}] File size: {file_size} bytes.")
 
-        # The tqdm description for the file is now handled by the outer loop in main()
-        # We use an inner tqdm to show progress through the current file's content (by bytes read)
+        # Calculate approximate number of chunks for better descriptions
+        num_total_chunks_approx = (
+                                              file_size + current_chunk_read_size_chars - 1) // current_chunk_read_size_chars if current_chunk_read_size_chars > 0 else 1
+        if num_total_chunks_approx == 0 and file_size > 0: num_total_chunks_approx = 1
+
+        # Progress bar for reading the current file (position 1, as main file loop is 0)
         with open(output_filepath, 'w', encoding='utf-8') as f_out, \
                 open(filepath, 'r', encoding='utf-8') as f_in, \
-                tqdm(total=file_size, unit='B', unit_scale=True, desc=f"Reading {os.path.basename(filepath)}",
-                     leave=False) as pbar_file_read:
+                tqdm(total=file_size, unit='B', unit_scale=True,
+                     desc=f"Reading {os.path.basename(filepath)}",
+                     leave=False, position=1, dynamic_ncols=True) as pbar_file_read:
 
             chunk_num = 0
             while True:
                 chunk_num += 1
-                tqdm.write(
-                    f"[{os.path.basename(filepath)}] Attempting to read chunk {chunk_num} (up to {current_chunk_read_size_chars} chars)...")
+                # tqdm.write(f"[{os.path.basename(filepath)}] Attempting to read chunk {chunk_num}/{num_total_chunks_approx} (up to {current_chunk_read_size_chars} chars)...")
                 text_chunk = f_in.read(current_chunk_read_size_chars)
-                tqdm.write(f"[{os.path.basename(filepath)}] Read {len(text_chunk)} characters for chunk {chunk_num}.")
+                # tqdm.write(f"[{os.path.basename(filepath)}] Read {len(text_chunk)} characters for chunk {chunk_num}.")
 
-                if not text_chunk:  # End of file
+                if not text_chunk:
                     tqdm.write(f"[{os.path.basename(filepath)}] End of file reached.")
                     break
 
-                pbar_file_read.update(len(text_chunk.encode('utf-8', errors='ignore')))  # Progress by bytes
+                pbar_file_read.update(len(text_chunk.encode('utf-8', errors='ignore')))
 
-                if not text_chunk.strip():  # If chunk is only whitespace
-                    tqdm.write(
-                        f"[{os.path.basename(filepath)}] Chunk {chunk_num} is whitespace, skipping spaCy processing.")
+                if not text_chunk.strip():
+                    tqdm.write(f"[{os.path.basename(filepath)}] Chunk {chunk_num} is whitespace, skipping.")
                     continue
 
-                tqdm.write(f"[{os.path.basename(filepath)}] Processing chunk {chunk_num} with spaCy...")
+                # tqdm.write(f"[{os.path.basename(filepath)}] Processing chunk {chunk_num} with spaCy...")
                 doc = spacy_nlp(text_chunk)
-                sentences_in_chunk = list(doc.sents)  # Get total count for tqdm
-                tqdm.write(
-                        f"[{os.path.basename(filepath)}] spaCy processing for chunk {chunk_num} complete. Found {len(sentences_in_chunk)} sentences.")
+                sentences_in_chunk = list(doc.sents)  # Convert to list to get total for tqdm
+                # tqdm.write(f"[{os.path.basename(filepath)}] spaCy found {len(sentences_in_chunk)} sentences in chunk {chunk_num}.")
 
-                sent_count_in_chunk = 0
+                # Progress bar for annotating sentences within the current chunk (position 2)
                 for sent in tqdm(sentences_in_chunk,
-                                 desc=f"Annotating chunk {chunk_num}/{num_total_chunks_approx}",
-                                 # Need num_total_chunks_approx
-                                 leave=False,
-                                 unit="sent",
-                                 position=2,  # For nesting under file_read bar
-                                 dynamic_ncols=True):  # No inner tqdm for sentences within chunk
-                    sent_count_in_chunk += 1
+                                 desc=f"Annotating chunk {chunk_num}/{num_total_chunks_approx} of {os.path.basename(filepath)}",
+                                 leave=False, unit="sent", position=2, dynamic_ncols=True):
                     sentence_text = sent.text.strip()
                     if not sentence_text:
                         continue
 
-                    # tqdm.write(f"[{os.path.basename(filepath)}] Annotating sentence {sent_count_in_chunk} in chunk {chunk_num}...")
                     annotated_sentence = annotate_sentence(sentence_text, bert_tokenizer, bert_model, device,
                                                            that_token_id, k_top_val)
 
@@ -211,24 +195,21 @@ def process_file(filepath, output_filepath, bert_tokenizer, bert_model, spacy_nl
                         f_out.write(" ")
                     f_out.write(annotated_sentence)
                     first_sentence_written_to_file = False
-                tqdm.write(
-                    f"[{os.path.basename(filepath)}] Finished annotating {sent_count_in_chunk} sentences in chunk {chunk_num}.")
+                    # tqdm.write(f"[{os.path.basename(filepath)}] Finished annotating chunk {chunk_num}.")
 
-        tqdm.write(f"--- Finished processing and saved: {output_filepath} ---")
+        tqdm.write(f"--- Finished processing and writing to: {output_filepath} ---")
 
     except FileNotFoundError:
         tqdm.write(f"Error: Input file not found {filepath}")
     except Exception as e:
         import traceback
-        tqdm.write(f"Error processing file {filepath}: {e}\n{traceback.format_exc()}")  # Print full traceback
-        # Consider removing partially written file if error occurs:
-        # if os.path.exists(output_filepath):
-        #     os.remove(output_filepath)
+        tqdm.write(f"Error processing file {filepath}: {e}\n{traceback.format_exc()}")
 
 
+# main() function needs to set position=0 for its tqdm loop
 def main():
-    parser = argparse.ArgumentParser(
-        description="Annotate text files with a special marker '[0]' where 'that' is a plausible complementizer, using spaCy for sentence tokenization.")
+    parser = argparse.ArgumentParser(description="Annotate text files...")  # Truncated for brevity
+    # ... (all argparse setup remains the same) ...
     parser.add_argument("input_folder", type=str, help="Folder containing .train text files to annotate.")
     parser.add_argument("output_folder", type=str, help="Folder where annotated files will be saved.")
     parser.add_argument("--bert_model_name", type=str, default=BERT_MODEL_NAME,
@@ -243,14 +224,17 @@ def main():
     args = parser.parse_args()
 
     device = get_device()
-    # --- Enable CuDNN benchmarking if on CUDA ---
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
         print("torch.backends.cudnn.benchmark set to True")
-    # --- End of CuDNN benchmarking ---
 
     bert_tokenizer, bert_model = load_bert_model_and_tokenizer(args.bert_model_name, device)
     spacy_nlp = load_spacy_model(args.spacy_model_name)
+
+    if args.chunk_size_chars <= 0:  # Prevent zero or negative chunk size
+        tqdm.write(
+            f"Error: chunk_size_chars ({args.chunk_size_chars}) must be positive. Using default {DEFAULT_CHUNK_READ_SIZE_CHARS}.")
+        args.chunk_size_chars = DEFAULT_CHUNK_READ_SIZE_CHARS
 
     if args.chunk_size_chars >= spacy_nlp.max_length:
         tqdm.write(
@@ -263,6 +247,7 @@ def main():
     if that_token_id == bert_tokenizer.unk_token_id:
         print(f"Warning: 'that' is an unknown token ({bert_tokenizer.unk_token}) for this BERT tokenizer.")
 
+    # ... (folder checks remain the same) ...
     if not os.path.isdir(args.input_folder):
         print(f"Error: Input folder '{args.input_folder}' not found.")
         return
@@ -278,7 +263,8 @@ def main():
         return
     print(f"Found {len(train_files)} .train files to process.")
 
-    for filepath in tqdm(train_files, desc="Overall File Progress", unit="file"):
+    # Outer progress bar for files (position 0)
+    for filepath in tqdm(train_files, desc="Overall File Progress", unit="file", position=0, dynamic_ncols=True):
         base_filename = os.path.basename(filepath)
         output_filename = base_filename + ".annotated"
         output_filepath = os.path.join(args.output_folder, output_filename)
