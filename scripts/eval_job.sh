@@ -82,7 +82,7 @@ fi
 
 # --- Define Paths on Host ---
 log_eval_job_message "Defining host paths..."
-HOST_SIF_PATH_EVAL_JOB="${HOST_PROJECT_DIR}/python39_annotate.sif" # <<< UPDATE SIF name
+HOST_SIF_PATH_EVAL_JOB="${HOST_PROJECT_DIR}/python39_llm_env.sif" # <<< UPDATE SIF name
 HOST_DATA_BASE_DIR_EVAL_JOB="${HOST_PROJECT_DIR}/data"
 HOST_PRIMING_BASE_DIR_EVAL_JOB="${HOST_PROJECT_DIR}/eval"
 log_eval_job_message "SIF Path: ${HOST_SIF_PATH_EVAL_JOB}"
