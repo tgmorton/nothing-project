@@ -29,7 +29,7 @@ else
 fi
 if [ ! -d "$HOST_PROJECT_DIR" ]; then echo "CRITICAL ERROR: HOST_PROJECT_DIR does not exist: ${HOST_PROJECT_DIR}"; exit 1; fi
 
-DEFAULT_SEED_FOR_STANDALONE="42"
+DEFAULT_SEED_FOR_STANDALONE="43"
 if [ -n "$CURRENT_SEED_TO_RUN" ]; then
     echo "Using CURRENT_SEED_TO_RUN from environment: ${CURRENT_SEED_TO_RUN}"
 else

@@ -68,8 +68,8 @@ echo "Starting Python training script (train.py - Training Only Mode) for Seed $
 
 # --- Define paths relative to container mount points for train.py ---
 # Example paths, adjust to your actual dataset structure
-CONTAINER_TRAIN_SET_PATH="${CONTAINER_DATA_DIR}/processed/training_set_10m" # For 10M model
-CONTAINER_VALID_SET_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m"     # For 10M model
+CONTAINER_TRAIN_SET_PATH="${CONTAINER_DATA_DIR}/processed/training_set_100m" # For 100M model
+CONTAINER_VALID_SET_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m"     # For 100M model
 
 # --- Define Neptune args for train.py ---
 NEPTUNE_PROJECT_ARG_FOR_TRAINPY=""
@@ -102,7 +102,7 @@ singularity exec --nv \
     "${HOST_SIF_PATH}" \
     python3 "${CONTAINER_WORKSPACE}/src/train.py" \
         --model "gpt2" \
-        --model_size "10m" \
+        --model_size "100m" \
         --train_dataset_path "${CONTAINER_TRAIN_SET_PATH}" \
         --validation_dataset_path "${CONTAINER_VALID_SET_PATH}" \
         --output_dir "${CONTAINER_OUTPUT_TARGET_DIR}" \
@@ -121,8 +121,8 @@ singularity exec --nv \
         --use_amp \
         --num_workers "${SLURM_CPUS_PER_TASK:-4}" \
         \
-        --logging_steps 50 \
-        --save_steps 100 \
+        --logging_steps 100 \
+        --save_steps 200 \
         ${NEPTUNE_PROJECT_ARG_FOR_TRAINPY} \
         --neptune_run_name "${NEPTUNE_RUN_NAME_FOR_TRAINPY}" \
         --neptune_tags ${NEPTUNE_TAGS_STRING}
