@@ -5,9 +5,9 @@
 #SBATCH --partition=general_gpu_a5000
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=4  # annotate_corpus.py is single-threaded but benefits from multi-core for data loading/pytorch
-#SBATCH --mem=32G          # Increased slightly for potentially large files in memory during chunking, 24G might still be fine
-#SBATCH --time=24:00:00    # Adjust based on your corpus size
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
+#SBATCH --time=24:00:00
 #SBATCH --output=../logs/annotate_corpus_%x_%j.out
 #SBATCH --error=../logs/annotate_corpus_%x_%j.err
 
@@ -29,7 +29,7 @@ module load singularity/4.1.1 cuda/11.8 # Adjust versions if needed
 
 # --- Define Paths on Host ---
 HOST_PROJECT_DIR="/home/AD/thmorton/nothing-project" # Your main project directory
-HOST_SIF_PATH="/home/AD/thmorton/nothing-project/python39_annotate.sif" # Your Singularity image
+HOST_SIF_PATH="/home/AD/thmorton/nothing-project/python39_annotate.sif" # Your Singularity image with dependencies
 
 # Data paths for annotation
 HOST_RAW_DATA_DIR="${HOST_PROJECT_DIR}/data/raw/text_data/train_10M" # INPUT: Where your .train files are
@@ -64,59 +64,20 @@ export SINGULARITYENV_PYTORCH_CUDA_ALLOC_CONF=$PYTORCH_CUDA_ALLOC_CONF # Pass to
 
 # === Annotation Script Execution ===
 echo "Starting annotation script inside Singularity container..."
-
-# Note on installing packages inside Singularity at runtime:
-# The following 'pip install --user' and 'spacy download' commands attempt to install
-# packages into the user's home directory (or a specific path if PYTHONUSERBASE is set)
-# *inside the container*. This works if $HOME is mounted and writable from within the container.
-# If your SIF is strictly immutable and $HOME is not suitable, these packages
-# should ideally be part of the SIF image itself.
-# This approach is a common workaround.
+echo "Assuming dependencies (torch, transformers, spacy, tqdm, spacy model) are pre-installed in SIF: ${HOST_SIF_PATH}"
 
 singularity exec --nv \
     -B "${HOST_PROJECT_DIR}":"${CONTAINER_WORKSPACE}" \
     -B "${HOST_RAW_DATA_DIR}":"${CONTAINER_RAW_DATA_DIR}" \
     -B "${HOST_ANNOTATED_DATA_DIR}":"${CONTAINER_ANNOTATED_DATA_DIR}" \
     "${HOST_SIF_PATH}" \
-    bash -c "
-        set -e
-        echo '--- Container: Environment Info ---'
-        pwd
-        ls -la /
-        echo USER: \$USER
-        echo HOME: \$HOME
-        id
-        echo '--- Container: Attempting to ensure dependencies ---'
-
-        # Ensure pip is available and then install packages using --user
-        # The --user flag installs packages into the user's site-packages directory
-        # (e.g., $HOME/.local/lib/python3.9/site-packages for Python 3.9)
-        # This requires $HOME to be writable within the container.
-        python3 -m pip install --upgrade pip
-        echo 'Attempting to install spacy, tqdm, transformers, torch...'
-        python3 -m pip install --user spacy tqdm transformers torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 # Ensure CUDA version matches torch wheel
-
-        # Check for spaCy model and download if not present
-        echo 'Checking for spaCy model en_core_web_sm...'
-        if ! python3 -m spacy info en_core_web_sm > /dev/null 2>&1; then
-            echo 'Downloading spaCy model en_core_web_sm...'
-            python3 -m spacy download en_core_web_sm
-        else
-            echo 'spaCy model en_core_web_sm seems to be available.'
-        fi
-        echo '--- Container: Dependency setup attempt finished ---'
-
-        echo '--- Container: Starting annotation script ---'
-        python3 \"${CONTAINER_ANNOTATE_SCRIPT_PATH}\" \
-            \"${CONTAINER_RAW_DATA_DIR}\" \
-            \"${CONTAINER_ANNOTATED_DATA_DIR}\" \
-            --bert_model_name \"distilbert-base-uncased\" \
-            --spacy_model_name \"en_core_web_sm\" \
-            --k_top 10 \
-            --chunk_size_chars 500000 # Default from your script, adjust if needed
-
-        echo '--- Container: Annotation script finished ---'
-    "
+    python3 "${CONTAINER_ANNOTATE_SCRIPT_PATH}" \
+        "${CONTAINER_RAW_DATA_DIR}" \
+        "${CONTAINER_ANNOTATED_DATA_DIR}" \
+        --bert_model_name "distilbert-base-uncased" \
+        --spacy_model_name "en_core_web_sm" \
+        --k_top 10 \
+        --chunk_size_chars 500000 # Default from your script, adjust if needed
 
 # === Job Completion ===
 echo "=== Annotation Job Finished: $(date) ==="
