@@ -7,7 +7,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:1                    # Request 1 A5000 GPU for training
 #SBATCH --time=7-00:00:00                  # Max time for a single training run
 #SBATCH --mail-type=END,FAIL            # Notify on end/fail of this training job
 #SBATCH --mail-user=your_email@example.com # <<< UPDATE THIS
