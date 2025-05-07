@@ -5,6 +5,8 @@ from transformers import BertTokenizer, BertForMaskedLM
 import argparse
 import spacy
 from tqdm import tqdm
+import time  # For timing operations
+import traceback  # For detailed error tracebacks
 
 import warnings
 
@@ -13,13 +15,19 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torch._jit_inter
 if torch.cuda.is_available():
     from torch.cuda.amp import autocast
 else:
-    class autocast:  # Dummy for CPU
-        def __init__(self, enabled=True): self.enabled = enabled
+    # Define a dummy autocast context manager if CUDA is not available
+    # so the 'with autocast():' line doesn't break on CPU-only setups.
+    class autocast:
+        def __init__(self, enabled=True):
+            self.enabled = enabled
 
-        def __enter__(self): pass
+        def __enter__(self):
+            pass
 
-        def __exit__(self, *args): pass
+        def __exit__(self, *args):
+            pass
 
+# --- Configuration ---
 BERT_MODEL_NAME = 'bert-base-uncased'
 SPACY_MODEL_NAME = 'en_core_web_sm'
 K_TOP = 10
@@ -28,28 +36,33 @@ DEFAULT_CHUNK_READ_SIZE_CHARS = 500_000
 
 
 def get_device():
-    # ... (function remains the same) ...
     if torch.cuda.is_available():
+        # tqdm.write("Using GPU.") # Using print for initial setup messages
         print("Using GPU.")
         return torch.device("cuda")
     else:
+        # tqdm.write("Using CPU.")
         print("Using CPU.")
         return torch.device("cpu")
 
 
 def load_bert_model_and_tokenizer(model_name, device):
-    # ... (function remains the same) ...
+    load_start_time = time.perf_counter()
+    # tqdm.write(f"Loading BERT model: {model_name}...")
     print(f"Loading BERT model: {model_name}...")
     tokenizer = BertTokenizer.from_pretrained(model_name)
     model = BertForMaskedLM.from_pretrained(model_name)
     model.to(device)
     model.eval()
-    print("BERT Model and tokenizer loaded.")
+    load_end_time = time.perf_counter()
+    # tqdm.write(f"BERT Model and tokenizer loaded in {load_end_time - load_start_time:.2f} seconds.")
+    print(f"BERT Model and tokenizer loaded in {load_end_time - load_start_time:.2f} seconds.")
     return tokenizer, model
 
 
 def load_spacy_model(model_name):
-    # ... (function remains the same, including nlp.max_length adjustment and sentencizer add) ...
+    load_start_time = time.perf_counter()
+    # tqdm.write(f"Loading spaCy model: {model_name}...")
     print(f"Loading spaCy model: {model_name}...")
     try:
         disabled_pipes = ["parser", "ner", "tagger", "lemmatizer", "attribute_ruler"]
@@ -58,23 +71,25 @@ def load_spacy_model(model_name):
         active_sentence_segmenters = any(pipe_name in ["senter", "sentencizer"] for pipe_name in nlp.pipe_names)
         if not active_sentence_segmenters:
             tqdm.write(
-                f"Pipeline {nlp.pipe_names} lacks an active sentence segmenter. Adding 'sentencizer'.")  # Use tqdm.write
+                f"Pipeline {nlp.pipe_names} lacks an active sentence segmenter. Adding 'sentencizer'.")
             try:
                 nlp.add_pipe('sentencizer', first=True)
-                tqdm.write("Successfully added 'sentencizer' to the spaCy pipeline.")  # Use tqdm.write
+                tqdm.write("Successfully added 'sentencizer' to the spaCy pipeline.")
             except Exception as add_pipe_e:
                 tqdm.write(
-                    f"Failed to add 'sentencizer': {add_pipe_e}. Sentence segmentation may fail.")  # Use tqdm.write
+                    f"Failed to add 'sentencizer': {add_pipe_e}. Sentence segmentation may fail.")
         elif 'senter' in nlp.pipe_names:
-            tqdm.write(f"'senter' component is active in pipeline: {nlp.pipe_names}.")  # Use tqdm.write
+            tqdm.write(f"'senter' component is active in pipeline: {nlp.pipe_names}.")
         elif 'sentencizer' in nlp.pipe_names:
-            tqdm.write(f"'sentencizer' component is active in pipeline: {nlp.pipe_names}.")  # Use tqdm.write
+            tqdm.write(f"'sentencizer' component is active in pipeline: {nlp.pipe_names}.")
 
         new_max_length = 12 * 1024 * 1024
         if nlp.max_length < new_max_length:
             nlp.max_length = new_max_length
+            # tqdm.write(f"Increased spaCy nlp.max_length to: {nlp.max_length}")
             print(f"Increased spaCy nlp.max_length to: {nlp.max_length}")
         else:
+            # tqdm.write(f"Current spaCy nlp.max_length ({nlp.max_length}) is sufficient and was not changed.")
             print(f"Current spaCy nlp.max_length ({nlp.max_length}) is sufficient and was not changed.")
     except OSError:
         print(f"spaCy model '{model_name}' not found. Please download it by running:")
@@ -83,16 +98,30 @@ def load_spacy_model(model_name):
     except Exception as e:
         print(f"An error occurred while loading or configuring the spaCy model: {e}")
         raise
+
+    load_end_time = time.perf_counter()
+    # tqdm.write(f"Final spaCy pipeline components: {nlp.pipe_names}")
+    # tqdm.write(f"spaCy model loaded and configured in {load_end_time - load_start_time:.2f} seconds.")
     print(f"Final spaCy pipeline components: {nlp.pipe_names}")
-    print("spaCy model loaded and configured.")
+    print(f"spaCy model loaded and configured in {load_end_time - load_start_time:.2f} seconds.")
     return nlp
 
 
 def annotate_sentence(sentence_text, tokenizer, model, device, that_token_id, k_top_val):
-    # ... (function remains the same) ...
+    func_start_time = time.perf_counter()
+
+    timings = {
+        "encode_plus_duration": 0.0,
+        "model_inference_duration": 0.0,
+        "topk_duration": 0.0,
+        "bert_calls": 0,
+        "num_slots_processed": 0
+    }
+
     original_words = sentence_text.split()
     if len(original_words) < 2:
-        return " ".join(original_words)
+        timings["total_function_time"] = time.perf_counter() - func_start_time
+        return " ".join(original_words), timings
 
     output_word_list = list(original_words)
     bert_context_word_list = list(original_words)
@@ -100,58 +129,84 @@ def annotate_sentence(sentence_text, tokenizer, model, device, that_token_id, k_
     enable_amp = (device.type == 'cuda')
 
     for i in range(len(original_words) - 1):
+        timings["num_slots_processed"] += 1
         current_insertion_idx_for_lists = i + 1 + insertions_made_count
         temp_bert_input_words = list(bert_context_word_list)
         temp_bert_input_words.insert(current_insertion_idx_for_lists, tokenizer.mask_token)
         masked_input_string = " ".join(temp_bert_input_words)
 
+        t_start_encode = time.perf_counter()
         inputs = tokenizer.encode_plus(
             masked_input_string, return_tensors='pt', add_special_tokens=True,
             truncation=True, max_length=tokenizer.model_max_length
         )
+        timings["encode_plus_duration"] += (time.perf_counter() - t_start_encode)
+
         input_ids = inputs['input_ids'].to(device)
         attention_mask = inputs['attention_mask'].to(device)
 
         try:
             mask_token_indices = (input_ids[0] == tokenizer.mask_token_id).nonzero(as_tuple=True)[0]
-            if not mask_token_indices.numel(): continue  # Check if empty
+            if not mask_token_indices.numel(): continue
             mask_token_index = mask_token_indices[0]
         except IndexError:
             continue
 
+        timings["bert_calls"] += 1
         with torch.no_grad():
             with autocast(enabled=enable_amp):
+                t_start_model = time.perf_counter()
                 outputs = model(input_ids, attention_mask=attention_mask)
+                timings["model_inference_duration"] += (time.perf_counter() - t_start_model)
             predictions = outputs.logits
 
         if mask_token_index >= predictions.shape[1]: continue
 
         mask_logits = predictions[0, mask_token_index, :]
+
+        t_start_topk = time.perf_counter()
         top_k_indices = torch.topk(mask_logits, k_top_val, dim=-1).indices.tolist()
+        timings["topk_duration"] += (time.perf_counter() - t_start_topk)
 
         if that_token_id in top_k_indices:
             output_word_list.insert(current_insertion_idx_for_lists, SPECIAL_MARKER)
             bert_context_word_list.insert(current_insertion_idx_for_lists, 'that')
             insertions_made_count += 1
-    return " ".join(output_word_list)
+
+    timings["total_function_time"] = time.perf_counter() - func_start_time
+    return " ".join(output_word_list), timings
 
 
-# Modified process_file with more granular progress bar
 def process_file(filepath, output_filepath, bert_tokenizer, bert_model, spacy_nlp, device, that_token_id, k_top_val,
                  current_chunk_read_size_chars):
     tqdm.write(f"--- Starting process_file for: {os.path.basename(filepath)} ---")
+    file_process_start_time = time.perf_counter()
     first_sentence_written_to_file = True
 
+    # File-level timing aggregators
+    file_total_read_time = 0.0
+    file_total_spacy_time = 0.0
+    file_total_annotation_loop_time = 0.0
+    file_total_bert_calls = 0
+    file_total_encode_plus_duration = 0.0
+    file_total_model_inference_duration = 0.0
+    file_total_topk_duration = 0.0
+    file_total_annotate_function_time = 0.0
+    file_total_sentences_processed = 0
+    file_total_slots_processed = 0
+
     try:
+        t_getsize_start = time.perf_counter()
         file_size = os.path.getsize(filepath)
-        tqdm.write(f"[{os.path.basename(filepath)}] File size: {file_size} bytes.")
+        t_getsize_end = time.perf_counter()
+        tqdm.write(
+            f"[{os.path.basename(filepath)}] Got file size: {file_size} bytes in {t_getsize_end - t_getsize_start:.4f}s.")
 
-        # Calculate approximate number of chunks for better descriptions
         num_total_chunks_approx = (
-                                              file_size + current_chunk_read_size_chars - 1) // current_chunk_read_size_chars if current_chunk_read_size_chars > 0 else 1
+                                          file_size + current_chunk_read_size_chars - 1) // current_chunk_read_size_chars if current_chunk_read_size_chars > 0 else 1
         if num_total_chunks_approx == 0 and file_size > 0: num_total_chunks_approx = 1
+        tqdm.write(f"[{os.path.basename(filepath)}] Approx. chunks: {num_total_chunks_approx}")
 
-        # Progress bar for reading the current file (position 1, as main file loop is 0)
         with open(output_filepath, 'w', encoding='utf-8') as f_out, \
                 open(filepath, 'r', encoding='utf-8') as f_in, \
                 tqdm(total=file_size, unit='B', unit_scale=True,
@@ -161,26 +216,45 @@ def process_file(filepath, output_filepath, bert_tokenizer, bert_model, spacy_nl
             chunk_num = 0
             while True:
                 chunk_num += 1
-                # tqdm.write(f"[{os.path.basename(filepath)}] Attempting to read chunk {chunk_num}/{num_total_chunks_approx} (up to {current_chunk_read_size_chars} chars)...")
+
+                t_read_start = time.perf_counter()
                 text_chunk = f_in.read(current_chunk_read_size_chars)
-                # tqdm.write(f"[{os.path.basename(filepath)}] Read {len(text_chunk)} characters for chunk {chunk_num}.")
+                t_read_end = time.perf_counter()
+                chunk_read_time = t_read_end - t_read_start
+                file_total_read_time += chunk_read_time
 
                 if not text_chunk:
-                    tqdm.write(f"[{os.path.basename(filepath)}] End of file reached.")
+                    tqdm.write(
+                        f"[{os.path.basename(filepath)}] End of file reached after {chunk_read_time:.4f}s for final read attempt.")
                     break
 
                 pbar_file_read.update(len(text_chunk.encode('utf-8', errors='ignore')))
+                tqdm.write(
+                    f"[{os.path.basename(filepath)}] Read {len(text_chunk)} chars for chunk {chunk_num} in {chunk_read_time:.4f}s.")
 
                 if not text_chunk.strip():
                     tqdm.write(f"[{os.path.basename(filepath)}] Chunk {chunk_num} is whitespace, skipping.")
                     continue
 
-                # tqdm.write(f"[{os.path.basename(filepath)}] Processing chunk {chunk_num} with spaCy...")
+                t_spacy_start = time.perf_counter()
                 doc = spacy_nlp(text_chunk)
-                sentences_in_chunk = list(doc.sents)  # Convert to list to get total for tqdm
-                # tqdm.write(f"[{os.path.basename(filepath)}] spaCy found {len(sentences_in_chunk)} sentences in chunk {chunk_num}.")
+                t_spacy_end = time.perf_counter()
+                spacy_proc_time = t_spacy_end - t_spacy_start
+                file_total_spacy_time += spacy_proc_time
 
-                # Progress bar for annotating sentences within the current chunk (position 2)
+                sentences_in_chunk = list(doc.sents)
+                tqdm.write(
+                    f"[{os.path.basename(filepath)}] SpaCy processed chunk {chunk_num} in {spacy_proc_time:.4f}s. Found {len(sentences_in_chunk)} sentences.")
+
+                chunk_sents_processed = 0
+                chunk_total_bert_calls = 0
+                chunk_total_encode_plus_duration = 0.0
+                chunk_total_model_inference_duration = 0.0
+                chunk_total_topk_duration = 0.0
+                chunk_total_annotate_function_time = 0.0
+                chunk_total_slots_processed = 0
+
+                t_annotation_loop_start = time.perf_counter()
                 for sent in tqdm(sentences_in_chunk,
                                  desc=f"Annotating chunk {chunk_num}/{num_total_chunks_approx} of {os.path.basename(filepath)}",
                                  leave=False, unit="sent", position=2, dynamic_ncols=True):
@@ -188,28 +262,87 @@ def process_file(filepath, output_filepath, bert_tokenizer, bert_model, spacy_nl
                     if not sentence_text:
                         continue
 
-                    annotated_sentence = annotate_sentence(sentence_text, bert_tokenizer, bert_model, device,
-                                                           that_token_id, k_top_val)
+                    annotated_sentence, sentence_timings = annotate_sentence(sentence_text, bert_tokenizer, bert_model,
+                                                                             device,
+                                                                             that_token_id, k_top_val)
+
+                    chunk_sents_processed += 1
+                    chunk_total_bert_calls += sentence_timings["bert_calls"]
+                    chunk_total_encode_plus_duration += sentence_timings["encode_plus_duration"]
+                    chunk_total_model_inference_duration += sentence_timings["model_inference_duration"]
+                    chunk_total_topk_duration += sentence_timings["topk_duration"]
+                    chunk_total_annotate_function_time += sentence_timings["total_function_time"]
+                    chunk_total_slots_processed += sentence_timings["num_slots_processed"]
 
                     if not first_sentence_written_to_file:
                         f_out.write(" ")
                     f_out.write(annotated_sentence)
                     first_sentence_written_to_file = False
-                    # tqdm.write(f"[{os.path.basename(filepath)}] Finished annotating chunk {chunk_num}.")
 
-        tqdm.write(f"--- Finished processing and writing to: {output_filepath} ---")
+                t_annotation_loop_end = time.perf_counter()
+                annotation_loop_time = t_annotation_loop_end - t_annotation_loop_start
+                file_total_annotation_loop_time += annotation_loop_time
+
+                # Accumulate file totals
+                file_total_sentences_processed += chunk_sents_processed
+                file_total_bert_calls += chunk_total_bert_calls
+                file_total_encode_plus_duration += chunk_total_encode_plus_duration
+                file_total_model_inference_duration += chunk_total_model_inference_duration
+                file_total_topk_duration += chunk_total_topk_duration
+                file_total_annotate_function_time += chunk_total_annotate_function_time
+                file_total_slots_processed += chunk_total_slots_processed
+
+                tqdm.write(
+                    f"--- Chunk {chunk_num}/{num_total_chunks_approx} ({os.path.basename(filepath)}) Timings ---")
+                tqdm.write(f"  Read time: {chunk_read_time:.4f}s")
+                tqdm.write(f"  SpaCy proc time: {spacy_proc_time:.4f}s")
+                tqdm.write(f"  Annotation loop time (for {chunk_sents_processed} sents): {annotation_loop_time:.4f}s")
+                if chunk_sents_processed > 0:
+                    tqdm.write(f"    Avg time per sent in loop: {annotation_loop_time / chunk_sents_processed:.4f}s")
+                tqdm.write(f"  Total 'annotate_sentence' func time: {chunk_total_annotate_function_time:.4f}s")
+                tqdm.write(f"    Breakdown (within annotate_sentence calls for this chunk):")
+                tqdm.write(
+                    f"      Total BERT calls: {chunk_total_bert_calls} (across {chunk_total_slots_processed} slots)")
+                tqdm.write(f"      Total Encode+: {chunk_total_encode_plus_duration:.4f}s")
+                tqdm.write(f"      Total Model Infer: {chunk_total_model_inference_duration:.4f}s")
+                if chunk_total_bert_calls > 0:
+                    tqdm.write(
+                        f"        Avg Model Infer per call: {chunk_total_model_inference_duration / chunk_total_bert_calls:.4f}s")
+                tqdm.write(f"      Total TopK: {chunk_total_topk_duration:.4f}s")
+                tqdm.write(f"--- End Chunk {chunk_num} Timings ---")
+
+        file_process_end_time = time.perf_counter()
+        total_file_time = file_process_end_time - file_process_start_time
+        tqdm.write(f"--- FINISHED FILE: {os.path.basename(filepath)} in {total_file_time:.2f}s ---")
+        tqdm.write(f"  Total sentences processed: {file_total_sentences_processed}")
+        tqdm.write(f"  Total read time: {file_total_read_time:.2f}s")
+        tqdm.write(f"  Total spaCy time: {file_total_spacy_time:.2f}s")
+        tqdm.write(f"  Total annotation loop time: {file_total_annotation_loop_time:.2f}s")
+        tqdm.write(f"  Total accumulated 'annotate_sentence' func time: {file_total_annotate_function_time:.2f}s")
+        tqdm.write(f"    Overall Breakdown (within all annotate_sentence calls for this file):")
+        tqdm.write(f"      Total BERT calls: {file_total_bert_calls} (across {file_total_slots_processed} slots)")
+        tqdm.write(f"      Total Encode+: {file_total_encode_plus_duration:.2f}s")
+        tqdm.write(f"      Total Model Infer: {file_total_model_inference_duration:.2f}s")
+        if file_total_bert_calls > 0:
+            tqdm.write(
+                f"        Avg Model Infer per call: {file_total_model_inference_duration / file_total_bert_calls:.4f}s")
+            tqdm.write(
+                f"        Avg Slots per BERT call: {file_total_slots_processed / file_total_bert_calls if file_total_bert_calls > 0 else 0 :.2f}")  # Should be 1
+            tqdm.write(
+                f"        Avg Bert calls per sentence: {file_total_bert_calls / file_total_sentences_processed if file_total_sentences_processed > 0 else 0 :.2f}")
+
+        tqdm.write(f"      Total TopK: {file_total_topk_duration:.2f}s")
+        tqdm.write(f"--- End File Summary for {os.path.basename(filepath)} ---")
+
 
     except FileNotFoundError:
         tqdm.write(f"Error: Input file not found {filepath}")
     except Exception as e:
-        import traceback
         tqdm.write(f"Error processing file {filepath}: {e}\n{traceback.format_exc()}")
 
 
-# main() function needs to set position=0 for its tqdm loop
 def main():
-    parser = argparse.ArgumentParser(description="Annotate text files...")  # Truncated for brevity
-    # ... (all argparse setup remains the same) ...
+    parser = argparse.ArgumentParser(description="Annotate text files with extensive timing.")
     parser.add_argument("input_folder", type=str, help="Folder containing .train text files to annotate.")
     parser.add_argument("output_folder", type=str, help="Folder where annotated files will be saved.")
     parser.add_argument("--bert_model_name", type=str, default=BERT_MODEL_NAME,
@@ -222,7 +355,9 @@ def main():
                         help=f"Number of characters to read into memory at a time for processing (default: {DEFAULT_CHUNK_READ_SIZE_CHARS}).")
 
     args = parser.parse_args()
+    script_start_time = time.perf_counter()
 
+    # Use print for initial setup messages that appear before tqdm loops dominate
     device = get_device()
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
@@ -231,13 +366,13 @@ def main():
     bert_tokenizer, bert_model = load_bert_model_and_tokenizer(args.bert_model_name, device)
     spacy_nlp = load_spacy_model(args.spacy_model_name)
 
-    if args.chunk_size_chars <= 0:  # Prevent zero or negative chunk size
-        tqdm.write(
+    if args.chunk_size_chars <= 0:
+        print(
             f"Error: chunk_size_chars ({args.chunk_size_chars}) must be positive. Using default {DEFAULT_CHUNK_READ_SIZE_CHARS}.")
         args.chunk_size_chars = DEFAULT_CHUNK_READ_SIZE_CHARS
 
     if args.chunk_size_chars >= spacy_nlp.max_length:
-        tqdm.write(
+        print(  # Changed to print as it's before main loop
             f"Warning: CHUNK_READ_SIZE_CHARS ({args.chunk_size_chars}) is >= spaCy's nlp.max_length ({spacy_nlp.max_length}). This might lead to errors.")
 
     that_token_id = bert_tokenizer.convert_tokens_to_ids('that')
@@ -247,7 +382,6 @@ def main():
     if that_token_id == bert_tokenizer.unk_token_id:
         print(f"Warning: 'that' is an unknown token ({bert_tokenizer.unk_token}) for this BERT tokenizer.")
 
-    # ... (folder checks remain the same) ...
     if not os.path.isdir(args.input_folder):
         print(f"Error: Input folder '{args.input_folder}' not found.")
         return
@@ -263,15 +397,16 @@ def main():
         return
     print(f"Found {len(train_files)} .train files to process.")
 
-    # Outer progress bar for files (position 0)
+    overall_start_time = time.perf_counter()
     for filepath in tqdm(train_files, desc="Overall File Progress", unit="file", position=0, dynamic_ncols=True):
-        base_filename = os.path.basename(filepath)
-        output_filename = base_filename + ".annotated"
-        output_filepath = os.path.join(args.output_folder, output_filename)
         process_file(filepath, output_filepath, bert_tokenizer, bert_model, spacy_nlp, device, that_token_id,
                      args.k_top, args.chunk_size_chars)
 
-    print("Annotation process complete.")
+    overall_end_time = time.perf_counter()
+    print(f"Annotation process complete. Total script time: {overall_end_time - overall_start_time:.2f} seconds.")
+    print(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime(time.time()))} (System local time)")
+    print(
+        f"Current date from script perspective: {time.strftime('%A, %B %d, %Y at %I:%M:%S %p %Z', time.gmtime())} (UTC)")
 
 
 if __name__ == "__main__":
