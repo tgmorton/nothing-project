@@ -110,7 +110,7 @@ singularity exec --nv \
         python3 \"${CONTAINER_ANNOTATE_SCRIPT_PATH}\" \
             \"${CONTAINER_RAW_DATA_DIR}\" \
             \"${CONTAINER_ANNOTATED_DATA_DIR}\" \
-            --bert_model_name \"bert-base-uncased\" \
+            --bert_model_name \"distilbert-base-uncased\" \
             --spacy_model_name \"en_core_web_sm\" \
             --k_top 10 \
             --chunk_size_chars 500000 # Default from your script, adjust if needed
