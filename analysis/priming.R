@@ -11,10 +11,10 @@ message("Libraries loaded.")
 
 # --- 1. Setup & Logging ---
 # Define the path to your input CSV file
-csv_path <- '/Users/thomasmorton/ModelFolder/src/.output/gpt2_p6000_sif_local_eval_run/compiled_priming_summary_reshaped_upto_step_12800.csv' # <<< IMPORTANT: Replace with the actual path to your CSV file
+csv_path <- '/Users/thomasmorton/ModelFolder/analysis/may7_100m_s43_compiled_priming_summary_reshaped_upto_step_9000.csv' # <<< IMPORTANT: Replace with the actual path to your CSV file
 # Define path for potential output (e.g., transformed data)
-output_csv_path <- 'transformed_summary_wide.csv' # Updated output filename
-output_plot_dir <- "analysis/plots_priming"
+# output_csv_path <- 'transformed_summary_wide.csv' # Updated output filename
+output_plot_dir <- "analysis/plots_priming/may7_100m_s43"
 
 overall_start_time <- Sys.time()
 current_date_time <- format(overall_start_time, "%Y-%m-%d %H:%M:%S %Z")
@@ -122,8 +122,8 @@ message("Structure of the final wide transformed data:")
 glimpse(df_wide_summary) # Use glimpse for a concise structure overview
 
 # Optional: Save the transformed data
-message("Saving final wide transformed data to: ", output_csv_path)
-write_csv(df_wide_summary, output_csv_path)
+# message("Saving final wide transformed data to: ", output_csv_path)
+# write_csv(df_wide_summary, output_csv_path)
 
 # --- 6. Generate Plots (Using Wide Data) ---
 # This section generates plots based on the df_wide_summary data frame.

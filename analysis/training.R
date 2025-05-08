@@ -11,9 +11,9 @@ message("Libraries loaded.")
 
 # --- 1. Setup & Logging ---
 # Define the path to your input training statistics CSV file
-csv_path <- '/Users/thomasmorton/ModelFolder/src/.output/gpt2_p6000_sif_local_eval_run/compiled_standard_summary_upto_step_12800.csv' # <<< Path to your training stats file
+csv_path <- '/Users/thomasmorton/ModelFolder/analysis/may7_100m_s43_compiled_standard_summary_upto_step_9000.csv' # <<< Path to your training stats file
 # Define path for output plots
-output_plot_dir <- "analysis/plots_training" # Use a different directory name to avoid overwriting priming plots
+output_plot_dir <- "analysis/plots_training/may7_100m_s43" # Use a different directory name to avoid overwriting priming plots
 
 overall_start_time <- Sys.time()
 current_date_time <- format(overall_start_time, "%Y-%m-%d %H:%M:%S %Z")
