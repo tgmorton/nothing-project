@@ -32,7 +32,7 @@ module load singularity/4.1.1 cuda/11.8 # <<< CRITICAL: Ensure this is loaded
 HOST_PROJECT_DIR="/home/AD/thmorton/nothing-project"
 # --- Ensure this SIF was built with onnxruntime-gpu installed ---
 HOST_SIF_PATH="/home/AD/thmorton/nothing-project/python39_annotate_onnx.sif"
-HOST_ONNX_MODEL_DIR="${HOST_PROJECT_DIR}/onnx_distilbert_maskedlm" # Using DistilBERT ONNX
+HOST_ONNX_MODEL_DIR="${HOST_PROJECT_DIR}/distilbert-onnx" # Using DistilBERT ONNX
 HOST_RAW_DATA_DIR="${HOST_PROJECT_DIR}/data/raw/text_data/train_10M"
 HOST_ANNOTATED_DATA_DIR="${HOST_PROJECT_DIR}/data/annotated_text_data/train_10M"
 HOST_ANNOTATE_SCRIPT_PATH="${HOST_PROJECT_DIR}/src/annotate_corpus.py"
@@ -42,7 +42,7 @@ CONTAINER_WORKSPACE="/workspace"
 CONTAINER_RAW_DATA_DIR="/raw_data"
 CONTAINER_ANNOTATED_DATA_DIR="/annotated_data"
 CONTAINER_ONNX_MODEL_DIR="/onnx_model"
-CONTAINER_ANNOTATE_SCRIPT_PATH="${CONTAINER_WORKSPACE}/src/annotate_corpus.py"
+CONTAINER_ANNOTATE_SCRIPT_PATH="${CONTAINER_WORKSPACE}/src/annotate_corpus_onnx.py"
 
 # --- Preparations ---
 echo "Project Directory (Host): ${HOST_PROJECT_DIR}"
