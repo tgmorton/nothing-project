@@ -48,7 +48,7 @@ CONTAINER_WORKSPACE="/workspace" # Project directory mounted here
 CONTAINER_RAW_DATA_DIR="/raw_data" # Mount point for input data
 CONTAINER_ANNOTATED_DATA_DIR="/annotated_data" # Mount point for output data
 CONTAINER_ONNX_MODEL_DIR="/onnx_model" # Mount point for ONNX model/tokenizer files
-CONTAINER_ANNOTATE_SCRIPT_PATH="${CONTAINER_WORKSPACE}/src/annotate_corpus.py" # Script path inside container
+CONTAINER_ANNOTATE_SCRIPT_PATH="${CONTAINER_WORKSPACE}/src/annotate_corpus_onnx.py" # Script path inside container
 
 # --- Preparations ---
 echo "Project Directory (Host): ${HOST_PROJECT_DIR}"
