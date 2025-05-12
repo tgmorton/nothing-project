@@ -1,4 +1,4 @@
-# tokenize_dataset.py
+# tokenize_dataset.py (Version 2 - with optional max_length)
 import os
 import glob
 import json
@@ -25,6 +25,12 @@ parser.add_argument(
     required=True,
     help="Directory where the tokenized Arrow dataset will be saved.",
 )
+parser.add_argument(
+    "--max_length",  # New optional argument
+    type=int,
+    default=None,
+    help="Optional: Maximum sequence length. If provided, sequences will be truncated to this length."
+)
 # Optional: Add arguments for num_proc, etc. if needed
 # parser.add_argument("--num_proc", type=int, default=None, help="Number of processes for dataset mapping.")
 
@@ -34,13 +40,13 @@ args = parser.parse_args()
 INPUT_DATA_DIR = args.input_dir
 TOKENIZER_PATH = args.tokenizer_dir
 ARROW_OUTPUT_DIR = args.output_dir
+MAX_LENGTH = args.max_length  # Store the max_length argument
 # NUM_PROC = args.num_proc
 
 # Create output directory if it doesn't exist
 Path(ARROW_OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
 # --- 3. Find Input Data Files ---
-# It's important to use the same files that the tokenizer was trained on
 print(f"Searching for *.train files in: {INPUT_DATA_DIR}")
 train_files = glob.glob(os.path.join(INPUT_DATA_DIR, "**/*.train"), recursive=True)
 
@@ -55,6 +61,9 @@ try:
     from transformers import AutoTokenizer
     tokenizer_for_processing = AutoTokenizer.from_pretrained(TOKENIZER_PATH)
     print("Loaded tokenizer using AutoTokenizer.")
+    print(f"Tokenizer's default model_max_length: {tokenizer_for_processing.model_max_length}")
+    if MAX_LENGTH:
+        print(f"Applying user-defined max_length: {MAX_LENGTH}")
 except ImportError:
     print("Error: `transformers` library not found. Please install it: pip install transformers")
     exit(1)
@@ -71,8 +80,10 @@ except Exception as e:
              vocab=vocab_file,
              merges=merges_file,
         )
+        # For manual ByteLevelBPETokenizer, truncation is handled differently (see tokenize_function)
         print("Loaded tokenizer manually using ByteLevelBPETokenizer.")
-        # Note: Manual loading might require different handling in tokenize_function if not wrapped
+        if MAX_LENGTH:
+            print(f"Applying user-defined max_length: {MAX_LENGTH} (will be handled during encoding)")
     except ImportError:
          print("Error: `tokenizers` library not found for manual fallback. Please install it.")
          exit(1)
@@ -89,7 +100,6 @@ except ImportError:
     exit(1)
 
 print("\n--- Loading Text Data ---")
-# 'text' dataset builder reads lines from text files
 raw_datasets = load_dataset('text', data_files={'train': train_files})
 print("Raw dataset loaded:")
 print(raw_datasets)
@@ -100,19 +110,39 @@ print("\n--- Tokenizing Data ---")
 
 # Define the function to tokenize batches of text
 def tokenize_function(examples):
-    # Assumes tokenizer_for_processing is a loaded HF Tokenizer object
-    # (either from AutoTokenizer or wrapped if loaded manually)
-    # No padding/truncation applied here, saving raw token sequences.
-    if hasattr(tokenizer_for_processing, '__call__'):
-        tokenized_output = tokenizer_for_processing(examples['text'])
-        return {'input_ids': tokenized_output['input_ids']}
-    else:
-        # Handle case where tokenizer was loaded manually and isn't callable directly
-        # This part might need adjustment based on how manual loading was done
-        output_ids = []
-        for text_line in examples['text']:
-             output_ids.append(tokenizer_for_processing.encode(text_line).ids)
-        return {'input_ids': output_ids}
+    tokenizer_options = {}
+    if MAX_LENGTH is not None:
+        tokenizer_options['max_length'] = MAX_LENGTH
+        tokenizer_options['truncation'] = True
+        # If you also want padding to max_length, uncomment below:
+        # tokenizer_options['padding'] = "max_length"
+        # tokenizer_options['return_attention_mask'] = True # Usually needed if padding
+
+    if hasattr(tokenizer_for_processing, '__call__'): # For transformers FastTokenizers
+        tokenized_output = tokenizer_for_processing(
+            examples['text'],
+            **tokenizer_options # Pass options here
+        )
+        # Prepare dict for what .map expects. If padding/attention_mask enabled, add them.
+        output_dict = {'input_ids': tokenized_output['input_ids']}
+        if 'attention_mask' in tokenized_output:
+            output_dict['attention_mask'] = tokenized_output['attention_mask']
+        return output_dict
+    else: # For manually loaded ByteLevelBPETokenizer from 'tokenizers' library
+        # This path assumes tokenizer_for_processing is an instance from 'tokenizers' library
+        # and needs manual handling for truncation if MAX_LENGTH is set.
+        all_input_ids = []
+        for text_item in examples['text']:
+            # The .encode() method of tokenizers.ByteLevelBPETokenizer doesn't take max_length directly.
+            # Truncation can be enabled on the tokenizer instance itself or handled post-encoding.
+            # For simplicity here, we'll truncate post-encoding if MAX_LENGTH is set.
+            # A more robust way for tokenizers.Tokenizer would be to configure its truncation property.
+            encoding = tokenizer_for_processing.encode(text_item)
+            ids = encoding.ids
+            if MAX_LENGTH is not None and len(ids) > MAX_LENGTH:
+                ids = ids[:MAX_LENGTH]
+            all_input_ids.append(ids)
+        return {'input_ids': all_input_ids}
 
 
 # Apply the tokenization function
@@ -120,22 +150,24 @@ tokenized_datasets = raw_datasets.map(
     tokenize_function,
     batched=True,
     # num_proc=NUM_PROC, # Optional parallel processing
-    remove_columns=raw_datasets["train"].column_names, # Keep only input_ids
+    remove_columns=raw_datasets["train"].column_names, # Keep only specified columns
     desc="Running tokenizer on dataset",
 )
 
 print("Tokenization complete.")
 print("Tokenized dataset structure:")
 print(tokenized_datasets)
-print("Example entry (first 50 token IDs):")
+print("Example entry (first 50 token IDs if available, else full sequence):")
 if len(tokenized_datasets['train']) > 0:
-    print(tokenized_datasets['train'][0]['input_ids'][:50])
+    example_ids = tokenized_datasets['train'][0]['input_ids']
+    print(example_ids[:min(50, len(example_ids))])
+    if MAX_LENGTH:
+        print(f"Length of this example after potential truncation: {len(example_ids)} (max_length was {MAX_LENGTH})")
 else:
     print("Dataset is empty.")
 
 # --- 7. Save Tokenized Data as Arrow with Metadata ---
 print(f"\n--- Saving Tokenized Dataset to Arrow Format in: {ARROW_OUTPUT_DIR} ---")
-# save_to_disk handles Arrow conversion AND metadata generation
 tokenized_datasets['train'].save_to_disk(ARROW_OUTPUT_DIR)
 
 print("Dataset saved successfully.")
@@ -151,7 +183,7 @@ if os.path.exists(info_path):
         info_data = json.load(f)
     print("\nContents of dataset_info.json (preview):")
     print(f"  Builder Name: {info_data.get('builder_name')}")
-    print(f"  Features: {info_data.get('features')}")
+    print(f"  Features: {info_data.get('features')}") # This will show 'input_ids' and 'attention_mask' if generated
     print(f"  Num examples (train): {info_data.get('splits', {}).get('train', {}).get('num_examples')}")
 else:
     print(f"Could not find {info_path}")
