@@ -33,6 +33,8 @@ SPACY_MODEL_NAME = 'en_core_web_sm'
 K_TOP = 10
 SPECIAL_MARKER = "[0]"
 DEFAULT_CHUNK_READ_SIZE_CHARS = 500_000
+# MODIFICATION: Added constant for 'that'-like words (case-insensitive)
+THAT_LIKE_WORDS_LOWERCASE = {"that", "that's"}
 
 
 def get_device():
@@ -125,10 +127,32 @@ def annotate_sentence(sentence_text, tokenizer, model, device, that_token_id, k_
     insertions_made_count = 0
     enable_amp = (device.type == 'cuda')
 
-    for i in range(len(original_words) - 1):
+    for i in range(len(original_words) - 1):  # Iterates through potential insertion SLOTS
         timings["num_slots_processed"] += 1
+        # This is the index in output_word_list where [0] or 'that' (for BERT context) would be inserted
         current_insertion_idx_for_lists = i + 1 + insertions_made_count
-        temp_bert_input_words = list(bert_context_word_list)
+
+        # --- Start of MODIFICATION part 1 ---
+        # Check words that would be adjacent to [0] IF it were inserted
+        skip_insertion_due_to_adjacency = False
+
+        # Word to the left of the potential insertion slot in the current output_word_list
+        # (output_word_list reflects previous insertions in this sentence)
+        if current_insertion_idx_for_lists > 0:
+            word_before_slot = output_word_list[current_insertion_idx_for_lists - 1].lower()
+            if word_before_slot in THAT_LIKE_WORDS_LOWERCASE:
+                skip_insertion_due_to_adjacency = True
+
+        # Word to the right of the potential insertion slot in the current output_word_list
+        if not skip_insertion_due_to_adjacency and current_insertion_idx_for_lists < len(output_word_list):
+            word_after_slot = output_word_list[current_insertion_idx_for_lists].lower()
+            if word_after_slot in THAT_LIKE_WORDS_LOWERCASE:
+                skip_insertion_due_to_adjacency = True
+        # --- End of MODIFICATION part 1 ---
+
+        # Original logic for BERT prediction:
+        # Prepare input for BERT by inserting mask_token into bert_context_word_list
+        temp_bert_input_words = list(bert_context_word_list)  # Use a copy for masking
         temp_bert_input_words.insert(current_insertion_idx_for_lists, tokenizer.mask_token)
         masked_input_string = " ".join(temp_bert_input_words)
 
@@ -143,10 +167,15 @@ def annotate_sentence(sentence_text, tokenizer, model, device, that_token_id, k_
         attention_mask = inputs['attention_mask'].to(device)
 
         try:
+            # Find the actual index of the MASK token after tokenization
             mask_token_indices = (input_ids[0] == tokenizer.mask_token_id).nonzero(as_tuple=True)[0]
-            if not mask_token_indices.numel(): continue
-            mask_token_index = mask_token_indices[0]
+            if not mask_token_indices.numel():  # If no mask token found (e.g., truncated)
+                # tqdm.write(f"Warning: Mask token not found in tokenized input for: '{masked_input_string}'")
+                continue
+            mask_token_index = mask_token_indices[
+                0]  # Use the first mask token if multiple (should be rare for this logic)
         except IndexError:
+            # tqdm.write(f"Warning: IndexError finding mask token for: '{masked_input_string}'")
             continue
 
         timings["bert_calls"] += 1
@@ -157,7 +186,10 @@ def annotate_sentence(sentence_text, tokenizer, model, device, that_token_id, k_
                 timings["model_inference_duration"] += (time.perf_counter() - t_start_model)
             predictions = outputs.logits
 
-        if mask_token_index >= predictions.shape[1]: continue
+        # Ensure mask_token_index is valid for predictions tensor
+        if mask_token_index >= predictions.shape[1]:
+            # tqdm.write(f"Warning: mask_token_index {mask_token_index} out of bounds for predictions shape {predictions.shape} for '{masked_input_string}'")
+            continue
 
         mask_logits = predictions[0, mask_token_index, :]
 
@@ -166,9 +198,16 @@ def annotate_sentence(sentence_text, tokenizer, model, device, that_token_id, k_
         timings["topk_duration"] += (time.perf_counter() - t_start_topk)
 
         if that_token_id in top_k_indices:
-            output_word_list.insert(current_insertion_idx_for_lists, SPECIAL_MARKER)
-            bert_context_word_list.insert(current_insertion_idx_for_lists, 'that')
-            insertions_made_count += 1
+            # --- Start of MODIFICATION part 2 ---
+            if not skip_insertion_due_to_adjacency:  # Only insert [0] if not blocked by adjacent 'that'-like word
+                output_word_list.insert(current_insertion_idx_for_lists, SPECIAL_MARKER)
+                # Update bert_context_word_list as well, to reflect that 'that' is implicitly present
+                # for future slot predictions within this sentence.
+                bert_context_word_list.insert(current_insertion_idx_for_lists, 'that')
+                insertions_made_count += 1
+            # else: # Optional: for debugging or logging skipped insertions
+            # tqdm.write(f"Skipped [0] insertion at slot {i+1} due to adjacency in sentence: {' '.join(original_words)}")
+            # --- End of MODIFICATION part 2 ---
 
     timings["total_function_time"] = time.perf_counter() - func_start_time
     return " ".join(output_word_list), timings
@@ -225,7 +264,6 @@ def process_file(filepath, output_filepath, bert_tokenizer, bert_model, spacy_nl
                     break
 
                 pbar_file_read.update(len(text_chunk.encode('utf-8', errors='ignore')))
-                # tqdm.write(f"[{os.path.basename(filepath)}] Read {len(text_chunk)} chars for chunk {chunk_num} in {chunk_read_time:.4f}s.") # Can be too verbose
 
                 if not text_chunk.strip():
                     tqdm.write(f"[{os.path.basename(filepath)}] Chunk {chunk_num} is whitespace, skipping.")
@@ -238,7 +276,6 @@ def process_file(filepath, output_filepath, bert_tokenizer, bert_model, spacy_nl
                 file_total_spacy_time += spacy_proc_time
 
                 sentences_in_chunk = list(doc.sents)
-                # tqdm.write(f"[{os.path.basename(filepath)}] SpaCy processed chunk {chunk_num} in {spacy_proc_time:.4f}s. Found {len(sentences_in_chunk)} sentences.") # Can be too verbose
 
                 chunk_sents_processed = 0
                 chunk_total_bert_calls = 0
@@ -374,6 +411,10 @@ def main():
     if that_token_id == bert_tokenizer.unk_token_id:  # Check for UNK token
         print(
             f"Warning: 'that' is an unknown token ({bert_tokenizer.unk_token_id}) for this tokenizer ({type(bert_tokenizer).__name__}). Annotation may not find 'that'.")
+    # Ensure that_token_id is an int, not a tensor, if it comes directly from some tensor operations.
+    # bert_tokenizer.convert_tokens_to_ids should return int or list of ints.
+    if isinstance(that_token_id, torch.Tensor):
+        that_token_id = that_token_id.item()
 
     if not os.path.isdir(args.input_folder):
         print(f"Error: Input folder '{args.input_folder}' not found.")
