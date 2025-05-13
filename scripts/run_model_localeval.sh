@@ -2,36 +2,35 @@
 # training_job.sh
 # Can be run via sbatch (respects #SBATCH) or directly with bash for local testing.
 
-# --- Source Project Configuration ---
-if [ -z "$CONFIG_FILE_PATH_ABS" ]; then
-    # If not set by a parent script, try to find it relative to this script's location
-    # Assumes this script is in 'scripts/' and config is in the parent directory.
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
-    DEFAULT_CONFIG_PATH="${SCRIPT_DIR}/../project_config.sh"
-    echo "INFO: CONFIG_FILE_PATH_ABS not set. Attempting to use default: ${DEFAULT_CONFIG_PATH}"
-    if [ -f "$DEFAULT_CONFIG_PATH" ]; then
-        CONFIG_FILE_PATH_ABS="$DEFAULT_CONFIG_PATH"
-    else
-        echo "CRITICAL ERROR: CONFIG_FILE_PATH_ABS not provided, and default not found at ${DEFAULT_CONFIG_PATH}"
-        exit 1
-    fi
-fi
+# --- Handle Configuration File Path ---
+# The first command-line argument to this script can be the path to the config file.
+# If no argument is provided, it defaults to ../project_config.sh (relative to this script's location)
 
-if [ -f "$CONFIG_FILE_PATH_ABS" ]; then
-    echo "Sourcing project configuration from $CONFIG_FILE_PATH_ABS"
-    source "$CONFIG_FILE_PATH_ABS"
+CONFIG_FILE_ARG="$1" # Get the first argument
+
+if [ -n "$CONFIG_FILE_ARG" ]; then
+    # Argument provided, use it
+    CONFIG_FILE="$CONFIG_FILE_ARG"
+    echo "Configuration file path provided as argument: $CONFIG_FILE"
 else
-    echo "CRITICAL ERROR: Project configuration file not found at $CONFIG_FILE_PATH_ABS"
-    exit 1
+    # No argument provided, use default relative path
+    # Assuming this script is in a 'scripts' subdir and config is in parent project dir
+    DEFAULT_CONFIG_PATH="$(dirname "$0")/../project_config.sh"
+    CONFIG_FILE="$DEFAULT_CONFIG_PATH"
+    echo "No configuration file path provided as argument. Defaulting to: $CONFIG_FILE"
 fi
-# --- End Source Project Configuration ---
 
-# --- Set Defaults if Not Provided by Environment/Config (for standalone run) ---
-# HOST_PROJECT_DIR must be in the config file.
-if [ -z "$HOST_PROJECT_DIR" ]; then
-    echo "CRITICAL ERROR: HOST_PROJECT_DIR must be defined in your config file ('$CONFIG_FILE_PATH_ABS')."
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "CRITICAL ERROR: Project configuration file not found at resolved path: $CONFIG_FILE"
+    echo "Please provide the path as an argument or ensure it exists at the default location."
     exit 1
 fi
+
+# Make the config file path absolute and export it for child scripts
+export CONFIG_FILE_PATH_ABS="$(readlink -f "$CONFIG_FILE")"
+echo "Sourcing project configuration from absolute path: $CONFIG_FILE_PATH_ABS"
+source "$CONFIG_FILE_PATH_ABS"
+# --- End Handle Configuration File Path ---
 
 # These might be passed by main_orchestrator.sh. If not, provide defaults for local run.
 SHARED_RUN_ID="${SHARED_RUN_ID:-local_run_$(date +%Y%m%d_%H%M%S)}"
