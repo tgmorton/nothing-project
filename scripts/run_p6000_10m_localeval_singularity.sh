@@ -127,8 +127,8 @@ singularity exec --nv \
         --seed 42 \
         \
         --logging_steps 50 \
-        --eval_steps 100 \
-        --save_steps 100 \
+        --eval_steps 10 \
+        --save_steps 200 \
         --priming_eval_steps 100 \
         \
         ${NEPTUNE_PROJECT_ARG} \

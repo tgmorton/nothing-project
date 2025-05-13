@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=24G
+#SBATCH --mem=48G
 #SBATCH --gres=gpu:1
 #SBATCH --time=7-0:00:00
 #SBATCH --output=logs/%x_%j.out
@@ -111,25 +111,24 @@ singularity exec --nv \
         --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
         --output_dir "${CONTAINER_RUN_OUTPUT_DIR}" \
         \
-        --num_train_epochs 20 \
+        --num_train_epochs 2 \
         --per_device_train_batch_size 8 \
         --gradient_accumulation_steps 16 \
         \
         --learning_rate 3e-4 \
         --lr_scheduler_type "cosine" \
-        --num_warmup_steps 100 \
+        --num_warmup_steps 1500 \
         --weight_decay 0.01 \
         --max_grad_norm 1.0 \
         --model_size "100m" \
         \
         --use_amp \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
-        --seed 42 \
+        --seed 40 \
         \
-        --logging_steps 200 \
-        --eval_steps 400 \
-        --save_steps 400 \
-        --priming_eval_steps 400 \
+        --logging_steps 100 \
+        --eval_steps 1500 \
+        --save_steps 1500 \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_run_name "${NEPTUNE_RUN_NAME}" \
