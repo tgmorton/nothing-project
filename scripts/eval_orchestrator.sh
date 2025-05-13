@@ -1,87 +1,98 @@
 #!/bin/bash
-# eval_orchestrator.sh (Submitter for the long-running eval_job.sh)
+# eval_orchestrator.sh
+# This script now submits a single, long-running evaluation job (eval_job.sh)
+# that handles multiple checkpoints and watch mode.
 
-# --- Source Project Configuration ---
-if [ -z "$CONFIG_FILE_PATH_ABS" ]; then
-    echo "CRITICAL ERROR: CONFIG_FILE_PATH_ABS not provided to eval_orchestrator.sh"
-    exit 1
-fi
-if [ -f "$CONFIG_FILE_PATH_ABS" ]; then
-    echo "Sourcing project configuration from $CONFIG_FILE_PATH_ABS"
-    source "$CONFIG_FILE_PATH_ABS"
-else
-    echo "CRITICAL ERROR: Project configuration file not found at $CONFIG_FILE_PATH_ABS"
-    exit 1
-fi
-# --- End Source Project Configuration ---
-
-#SBATCH --job-name=${EVAL_ORCH_SUBMITTER_JOB_NAME:-eval_orch_submit}
-#SBATCH --partition=${EVAL_ORCH_SUBMITTER_PARTITION:-general}
+# === SBATCH Directives for This Orchestrator Script (very lightweight) ===
+#SBATCH --job-name=eval_orch_submitter # Will be overridden by main_orchestrator
+#SBATCH --partition=general          # CPU Partition for this submitter script
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=${EVAL_ORCH_SUBMITTER_CPUS:-1}
-#SBATCH --mem=${EVAL_ORCH_SUBMITTER_MEM:-1G}
-#SBATCH --time=${EVAL_ORCH_SUBMITTER_TIME:-0-00:10:00} # Short, just to submit
-#SBATCH --mail-type=${EVAL_ORCH_SUBMITTER_MAIL_TYPE:-FAIL}
-#SBATCH --mail-user=${EVAL_ORCH_SUBMITTER_MAIL_USER:-your_email@example.com}
+#SBATCH --cpus-per-task=1            # Minimal CPUs
+#SBATCH --mem=1G                     # Minimal RAM
+#SBATCH --time=0-00:10:00            # Short time, just to submit the actual eval job
+#SBATCH --mail-type=FAIL             # Notify only if this submission script fails
+#SBATCH --mail-user=your_email@example.com # <<< UPDATE THIS
 
-set -e
+set -e # Exit on error for this submission script
+
 echo "=== Evaluation Orchestrator (Submitter) Started: $(date) ==="
 echo "Eval Orchestrator (Submitter) Job ID: $SLURM_JOB_ID (Job Name: $SLURM_JOB_NAME)"
-echo "Host Project Dir (from env): ${HOST_PROJECT_DIR}"
-echo "Shared Output Dir for eval_job to watch (from env): ${SHARED_OUTPUT_DIR_HOST}"
-echo "Shared Run ID (from env): ${SHARED_RUN_ID}"
-echo "Seed for Eval Context (from env): ${SEED_FOR_EVAL}"
-echo "Checkpoint Ready Sentinel Filename (from env): ${CHECKPOINT_READY_SENTINEL_FILENAME}"
+echo "Host Project Dir: ${HOST_PROJECT_DIR}"
+echo "Shared Output Directory on Host (for eval_job to watch): ${SHARED_OUTPUT_DIR_HOST}"
+echo "Shared Run ID (for context): ${SHARED_RUN_ID}"
+echo "Seed for Evaluation Context: ${SEED_FOR_EVAL}"
+echo "Checkpoint Ready Sentinel Filename: ${CHECKPOINT_READY_SENTINEL_FILENAME}"
 
-# Validate essential env vars
+
+# --- Validate essential variables ---
 if [ -z "$HOST_PROJECT_DIR" ] || \
    [ -z "$SHARED_OUTPUT_DIR_HOST" ] || \
    [ -z "$SHARED_RUN_ID" ] || \
    [ -z "$SEED_FOR_EVAL" ] || \
    [ -z "$CHECKPOINT_READY_SENTINEL_FILENAME" ]; then
-    echo "CRITICAL ERROR (Eval Orchestrator Submitter): Essential env vars from main_orchestrator missing!"
+    echo "CRITICAL ERROR (Eval Orchestrator Submitter): Essential env vars not set!"
+    env | grep -E 'HOST_PROJECT_DIR|SHARED_OUTPUT_DIR_HOST|SHARED_RUN_ID|SEED_FOR_EVAL|CHECKPOINT_READY_SENTINEL_FILENAME'
     exit 1
 fi
 
-PATH_TO_ACTUAL_EVAL_JOB_SCRIPT="${HOST_PROJECT_DIR}/${EVAL_JOB_SCRIPT_RELATIVE_PATH:-scripts/eval_job.sh}"
-LONG_EVAL_JOB_SLURM_LOGS_DIR="${SHARED_OUTPUT_DIR_HOST}/${EVAL_JOB_SLURM_LOGS_SUBDIR_NAME:-long_running_eval_slurm_logs}"
+# --- Define Paths ---
+PATH_TO_ACTUAL_EVAL_JOB_SBATCH="${HOST_PROJECT_DIR}/scripts/eval_job.sh" # Path to the long-running eval job
+EVAL_JOB_SLURM_LOGS_SUBDIR_NAME="long_running_eval_slurm_logs" # Subdirectory within SHARED_OUTPUT_DIR_HOST
+LONG_EVAL_JOB_SLURM_LOGS_DIR="${SHARED_OUTPUT_DIR_HOST}/${EVAL_JOB_SLURM_LOGS_SUBDIR_NAME}"
 
-if [ ! -f "$PATH_TO_ACTUAL_EVAL_JOB_SCRIPT" ]; then
-    echo "CRITICAL ERROR: Target eval_job.sh script not found at ${PATH_TO_ACTUAL_EVAL_JOB_SCRIPT}"; exit 1;
+if [ ! -f "$PATH_TO_ACTUAL_EVAL_JOB_SBATCH" ]; then
+    echo "CRITICAL ERROR: The target evaluation script (eval_job.sh) not found at ${PATH_TO_ACTUAL_EVAL_JOB_SBATCH}"
+    exit 1
 fi
 mkdir -p "$LONG_EVAL_JOB_SLURM_LOGS_DIR"
 echo "Logs for the long-running evaluation job will be in: ${LONG_EVAL_JOB_SLURM_LOGS_DIR}"
 
-log_eval_orch_submitter_message() {
+# --- Submit the Single Long-Running Evaluation Job ---
+# This job will run evaluate.py with --watch_mode
+log_eval_orch_message() {
     echo "$(date '+%Y-%m-%d %H:%M:%S %Z') - EVAL_ORCH_SUBMITTER ($SLURM_JOB_ID): $1"
 }
 
-log_eval_orch_submitter_message "Attempting to submit the long-running multi-checkpoint evaluation job (eval_job.sh)..."
+log_eval_orch_message "Attempting to submit the long-running multi-checkpoint evaluation job (eval_job.sh)..."
 
-EVALUATE_PY_BASE_OUTPUT_DIR_ON_HOST="${SHARED_OUTPUT_DIR_HOST}/${EVALUATE_PY_MULTI_OUTPUT_SUBDIR_NAME:-eval_results_multi}"
-mkdir -p "$EVALUATE_PY_BASE_OUTPUT_DIR_ON_HOST"
+# The output directory for evaluate.py itself (where it creates subdirs per checkpoint)
+# will be within SHARED_OUTPUT_DIR_HOST, e.g., SHARED_OUTPUT_DIR_HOST/eval_results_multi
+EVALUATE_PY_BASE_OUTPUT_DIR_NAME="eval_results_multi"
+HOST_PATH_FOR_EVALUATE_PY_BASE_RESULTS="${SHARED_OUTPUT_DIR_HOST}/${EVALUATE_PY_BASE_OUTPUT_DIR_NAME}"
+mkdir -p "$HOST_PATH_FOR_EVALUATE_PY_BASE_RESULTS"
 
-# Slurm job name for the long-running eval job
-LONG_EVAL_SLURM_JOB_NAME="${EVAL_JOB_NAME_PREFIX:-multi_eval_watch}_${SHARED_RUN_ID}"
+
+# Variables to export to eval_job.sh:
+# HOST_PROJECT_DIR, SHARED_OUTPUT_DIR_HOST (as the watch dir), SHARED_RUN_ID, SEED_FOR_EVAL,
+# CHECKPOINT_READY_SENTINEL_FILENAME, HOST_PATH_FOR_EVALUATE_PY_BASE_RESULTS.
+# Other Slurm settings for eval_job.sh are within that script's #SBATCH directives.
+
+LONG_EVAL_SLURM_JOB_NAME="multi_eval_watch_${SHARED_RUN_ID}"
 
 SUBMIT_CMD_OUTPUT=$(sbatch \
-    --export=ALL,HOST_PROJECT_DIR="${HOST_PROJECT_DIR}",SHARED_OUTPUT_DIR_TO_WATCH="${SHARED_OUTPUT_DIR_HOST}",SHARED_RUN_ID="${SHARED_RUN_ID}",SEED_FOR_THIS_MULTI_EVAL="${SEED_FOR_EVAL}",CHECKPOINT_READY_SENTINEL_FILENAME="${CHECKPOINT_READY_SENTINEL_FILENAME}",EVALUATE_PY_OVERALL_OUTPUT_DIR_HOST="${EVALUATE_PY_BASE_OUTPUT_DIR_ON_HOST}",CONFIG_FILE_PATH_ABS="$(readlink -f $CONFIG_FILE_PATH_ABS)" \
+    --export=ALL,HOST_PROJECT_DIR="${HOST_PROJECT_DIR}",SHARED_OUTPUT_DIR_TO_WATCH="${SHARED_OUTPUT_DIR_HOST}",SHARED_RUN_ID="${SHARED_RUN_ID}",SEED_FOR_THIS_MULTI_EVAL="${SEED_FOR_EVAL}",CHECKPOINT_READY_SENTINEL_FILENAME="${CHECKPOINT_READY_SENTINEL_FILENAME}",EVALUATE_PY_OVERALL_OUTPUT_DIR="${HOST_PATH_FOR_EVALUATE_PY_BASE_RESULTS}" \
     --job-name="${LONG_EVAL_SLURM_JOB_NAME}" \
     --output="${LONG_EVAL_JOB_SLURM_LOGS_DIR}/${LONG_EVAL_SLURM_JOB_NAME}_%j.out" \
     --error="${LONG_EVAL_JOB_SLURM_LOGS_DIR}/${LONG_EVAL_SLURM_JOB_NAME}_%j.err" \
-    "${PATH_TO_ACTUAL_EVAL_JOB_SCRIPT}")
+    "${PATH_TO_ACTUAL_EVAL_JOB_SBATCH}")
 
 sbatch_exit_code=$?
 if [ $sbatch_exit_code -ne 0 ]; then
-    log_eval_orch_submitter_message "ERROR: sbatch FAILED (code ${sbatch_exit_code}) for long-running eval job. Output: ${SUBMIT_CMD_OUTPUT}"; exit 1;
+    log_eval_orch_message "ERROR: sbatch command FAILED (exit code ${sbatch_exit_code}) for submitting the long-running eval job. sbatch output: ${SUBMIT_CMD_OUTPUT}"
+    exit 1 # This submitter script failed
 fi
 
 submitted_job_id=$(echo "$SUBMIT_CMD_OUTPUT" | awk '{print $NF}')
 if ! [[ "$submitted_job_id" =~ ^[0-9]+$ ]]; then
-    log_eval_orch_submitter_message "ERROR: Failed to parse Job ID from sbatch output. Output: ${SUBMIT_CMD_OUTPUT}"; exit 1;
+    log_eval_orch_message "ERROR: Failed to parse Job ID from sbatch output for long-running eval job. Output: ${SUBMIT_CMD_OUTPUT}"
+    exit 1 # This submitter script failed
 fi
 
-log_eval_orch_submitter_message "Successfully submitted long-running multi-checkpoint evaluation job. Slurm Job ID: ${submitted_job_id}."
-log_eval_orch_submitter_message "This job will monitor ${SHARED_OUTPUT_DIR_HOST}."
+log_eval_orch_message "Successfully submitted long-running multi-checkpoint evaluation job. Slurm Job ID: ${submitted_job_id}."
+log_eval_orch_message "This job will now monitor ${SHARED_OUTPUT_DIR_HOST} for checkpoints."
+
 echo "=== Evaluation Orchestrator (Submitter) Finished Successfully: $(date) ==="
+# This script's work is done after submitting the main eval job.
+# main_orchestrator.sh will wait for this script (eval_orchestrator.sh) to complete.
+# The actual evaluation results depend on the long-running job.
