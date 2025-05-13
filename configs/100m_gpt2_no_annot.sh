@@ -17,7 +17,6 @@ export MAIN_ORCH_PARTITION="general" # CPU partition
 export MAIN_ORCH_CPUS="1"
 export MAIN_ORCH_MEM="4G"
 export MAIN_ORCH_TIME="7-00:00:00" # Max time for the entire pipeline run
-export MAIN_ORCH_LOG_DIR="../logs" # Relative to scripts folder, so project_root/logs
 export MAIN_ORCH_MAIL_TYPE="END,FAIL"
 export MAIN_ORCH_MAIL_USER="thmorton@ucsd.edu"
 export SEED_FOR_STANDALONE="40" # Default seed if not passed by a sweep

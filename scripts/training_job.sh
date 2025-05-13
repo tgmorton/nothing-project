@@ -25,8 +25,6 @@ fi
 #SBATCH --time=${TRAIN_JOB_TIME:-7-00:00:00}
 #SBATCH --mail-type=${TRAIN_JOB_MAIL_TYPE:-END,FAIL}
 #SBATCH --mail-user=${TRAIN_JOB_MAIL_USER:-your_email@example.com}
-# GPU selection if needed, e.g. #SBATCH --gres=gpu:${TRAIN_JOB_GPU_TYPE_COUNT:-a100:1}
-# For this example, assuming generic GPU request from the partition.
 
 set -e
 echo "=== Training Job Script Started: $(date) ==="
