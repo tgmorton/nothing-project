@@ -41,8 +41,8 @@ source "$CONFIG_FILE_PATH_ABS"
 #SBATCH --cpus-per-task=${MAIN_ORCH_CPUS:-1}
 #SBATCH --mem=${MAIN_ORCH_MEM:-4G}
 #SBATCH --time=${MAIN_ORCH_TIME:-7-0:00:00}
-#SBATCH --output=../logs/main_orchestrator_%x_%j.out
-#SBATCH --error=../logs/main_orchestrator_%x_%j.err
+#SBATCH --output=${MAIN_ORCH_LOG_DIR:-../logs}/main_orchestrator_%x_%j.out
+#SBATCH --error=${MAIN_ORCH_LOG_DIR:-../logs}/main_orchestrator_%x_%j.err
 #SBATCH --mail-type=${MAIN_ORCH_MAIL_TYPE:-END,FAIL}
 #SBATCH --mail-user=${MAIN_ORCH_MAIL_USER:-your_email@example.com}
 
