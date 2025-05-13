@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=4              # Request CPUs (MODIFY IF NEEDED for eval)
 #SBATCH --mem=24G                      # Request RAM (MODIFY IF NEEDED for eval)
 #SBATCH --gres=gpu:1                   # Request 1 GPU (MODIFY IF NEEDED for eval)
-#SBATCH --time=02:00:00                # Time limit (HH:MM:SS) - e.g., 2 hours for eval
+#SBATCH --time=7-0:00:00                 # Time limit (HH:MM:SS) - e.g., 2 hours for eval
 #SBATCH --output=slurm_eval_%j.out     # Default output (overridden by sbatch cmd using EVAL_OUT_DIR)
 #SBATCH --error=slurm_eval_%j.err      # Default error (overridden by sbatch cmd using EVAL_OUT_DIR)
 

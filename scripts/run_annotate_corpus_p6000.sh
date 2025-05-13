@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=4  # annotate_corpus.py is single-threaded but benefits from multi-core for data loading/pytorch
 #SBATCH --mem=32G          # Increased slightly for potentially large files in memory during chunking, 24G might still be fine
 #SBATCH --gres=gpu:1       # BERT model inference will use the GPU
-#SBATCH --time=24:00:00    # Adjust based on your corpus size
+#SBATCH --time=7-0:00:00      # Adjust based on your corpus size
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 

@@ -8,7 +8,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1            # Minimal CPUs for polling
 #SBATCH --mem=4G                     # Minimal RAM
-#SBATCH --time=24:40:00              # Should be long enough to monitor training output
+#SBATCH --time=7-0:00:00              # Should be long enough to monitor training output
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=your_email@example.com # <<< UPDATE THIS
 

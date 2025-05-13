@@ -8,7 +8,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
-#SBATCH --time=24:45:00           # Max time for ONE full pipeline (train + eval orchestrator)
+#SBATCH --time=7-0:00:00        # Max time for ONE full pipeline (train + eval orchestrator)
 #SBATCH --output=../logs/main_orchestrator_%x_%j.out # Default for standalone
 #SBATCH --error=../logs/main_orchestrator_%x_%j.err  # Default for standalone
 #SBATCH --mail-type=END,FAIL      # Notify on end/fail of this orchestrator job

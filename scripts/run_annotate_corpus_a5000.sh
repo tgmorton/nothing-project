@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=24:00:00
+#SBATCH --time=7-0:00:00
 #SBATCH --output=../logs/annotate_corpus_%x_%j.out
 #SBATCH --error=../logs/annotate_corpus_%x_%j.err
 

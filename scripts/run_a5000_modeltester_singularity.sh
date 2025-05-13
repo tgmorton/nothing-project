@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8          # <<< Increased CPUs
 #SBATCH --mem=64G              # <<< Increased RAM
-#SBATCH --time=24:00:00          # <<< Increased time slightly for local evals
+#SBATCH --time=7-0:00:00            # <<< Increased time slightly for local evals
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --mail-type=BEGIN,END

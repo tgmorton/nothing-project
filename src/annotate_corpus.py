@@ -435,10 +435,15 @@ def main():
     # Outer progress bar for files (position 0)
     for filepath_idx, filepath in enumerate(
             tqdm(train_files, desc="Overall File Progress", unit="file", position=0, dynamic_ncols=True)):
-        # Ensure output_filepath is defined in each iteration of the loop
         base_filename = os.path.basename(filepath)
         output_filename = base_filename + ".annotated"
         output_filepath = os.path.join(args.output_folder, output_filename)
+
+        # --- MODIFICATION: Check if output file already exists ---
+        if os.path.exists(output_filepath):
+            tqdm.write(f"Skipping '{base_filename}': Annotated file '{output_filename}' already exists in '{args.output_folder}'.")
+            continue  # Skip to the next file
+        # --- END OF MODIFICATION ---
 
         tqdm.write(f"\nStarting file {filepath_idx + 1}/{len(train_files)}: {base_filename}")
         process_file(filepath, output_filepath, bert_tokenizer, bert_model, spacy_nlp, device, that_token_id,
