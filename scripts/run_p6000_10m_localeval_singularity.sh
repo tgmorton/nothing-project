@@ -9,8 +9,8 @@
 #SBATCH --mem=24G
 #SBATCH --gres=gpu:1
 #SBATCH --time=7-0:00:00
-#SBATCH --output=logs/%x_%j.out
-#SBATCH --error=logs/%x_%j.err
+#SBATCH --output=..logs/%x_%j.out
+#SBATCH --error=..logs/%x_%j.err
 
 # Exit on error
 set -e
