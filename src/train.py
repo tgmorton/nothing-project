@@ -152,7 +152,8 @@ def get_device():
     import torch;
     import os
     if torch.backends.mps.is_available():
-        device = torch.device("mps"); print("Using MPS")
+        device = torch.device("mps");
+        print("Using MPS")
     elif torch.cuda.is_available():
         try:
             local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -163,7 +164,8 @@ def get_device():
             print(f"Error setting CUDA: {e}. Using CPU.")
             device = torch.device("cpu")
     else:
-        device = torch.device("cpu"); print("Using CPU")
+        device = torch.device("cpu");
+        print("Using CPU")
     return device
 
 
@@ -423,7 +425,7 @@ def run_local_evaluation(args, checkpoint_dir: Path, global_step: int, rank: int
 
 def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
                 train_sampler, epoch, global_step, device, rank, world_size, run, tokenizer,
-                max_train_steps):
+                max_train_steps, log_save_steps_set):  # MODIFIED: Added log_save_steps_set
     """
     Runs one training epoch.
     Saves checkpoints and triggers local evaluation periodically if enabled.
@@ -515,7 +517,7 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
                 avg_loss = total_loss_since_logging / steps_since_logging
                 lr = lr_scheduler.get_last_lr()[0] if hasattr(lr_scheduler,
                                                               'get_last_lr') and lr_scheduler.get_last_lr() else \
-                optimizer.param_groups[0]['lr']
+                    optimizer.param_groups[0]['lr']
                 logger.info(f"Epoch {epoch + 1} | Step {global_step}: Avg Train Loss = {avg_loss:.4f}, LR = {lr:.6e}")
                 if NEPTUNE_AVAILABLE and run:
                     try:
@@ -528,7 +530,15 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
                         logger.warning(f"Neptune train log failed at step {global_step}: {e}")
                 total_loss_since_logging, steps_since_logging = 0.0, 0
 
-            if global_step > 0 and global_step % args.save_steps == 0:
+            # ---- MODIFIED: Checkpoint saving logic ----
+            time_for_log_save = global_step in log_save_steps_set
+            # Regular save: ensure it's enabled, it's a multiple, and it's not step 0 (handled by init checkpoint)
+            time_for_regular_save = args.save_steps > 0 and global_step > 0 and global_step % args.save_steps == 0
+
+            should_save_this_step = time_for_log_save or time_for_regular_save
+
+            if should_save_this_step:
+                # ---- END MODIFIED ----
                 if is_distributed: torch.distributed.barrier()
                 save_checkpoint(args, model, optimizer, lr_scheduler, scaler, epoch, global_step, rank, tokenizer)
                 if is_distributed: torch.distributed.barrier()
@@ -543,7 +553,9 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
                     checkpoint_dir = Path(args.output_dir) / f"checkpoint-{global_step}"
                     if rank == 0 and not checkpoint_dir.is_dir():
                         logger.warning(
-                            f"Local eval: Checkpoint {checkpoint_dir} not found for eval trigger. Saving now.")
+                            f"Local eval: Checkpoint {checkpoint_dir} not found for eval trigger. "
+                            f"This might happen if save_steps/log_steps do not align with eval_steps. Saving now as a fallback."
+                        )
                         if is_distributed: torch.distributed.barrier()
                         save_checkpoint(args, model, optimizer, lr_scheduler, scaler, epoch, global_step, rank,
                                         tokenizer)
@@ -810,6 +822,34 @@ def main():
     else:
         if rank == 0: logger.info("No checkpoint path specified. Starting training from scratch.")
 
+    # ---- ADDED: Save checkpoint at initialization (step 0) if not resuming ----
+    if global_step == 0 and not resumed_from_checkpoint:
+        if rank == 0:
+            logger.info("Saving initial checkpoint at step 0 as training is starting from scratch.")
+            save_checkpoint(args, model, optimizer, lr_scheduler, scaler, start_epoch, 0, rank, tokenizer)
+        if is_distributed:
+            torch.distributed.barrier()  # Ensure all processes wait if rank 0 saved, and sync before training loop
+    # ---- END ADDED ----
+
+    # ---- ADDED: Generate logarithmic save steps ----
+    log_save_steps_set = set()
+    if args.save_steps > 0:  # Only if regular saving is configured, to give context to "first save step"
+        current_log_step = 1
+        while current_log_step < args.save_steps:
+            log_save_steps_set.add(current_log_step)
+            next_log_step = current_log_step * 2
+            if next_log_step <= current_log_step:  # Handles overflow or current_log_step becoming 0
+                if rank == 0: logger.warning(
+                    f"Logarithmic step generation issue: next step {next_log_step} not greater than current {current_log_step}. Stopping log step generation.")
+                break
+            current_log_step = next_log_step
+    if rank == 0 and log_save_steps_set:  # Log only if set is not empty
+        logger.info(
+            f"Calculated logarithmic save steps (up to args.save_steps={args.save_steps}): {sorted(list(log_save_steps_set))}")
+    elif rank == 0:
+        logger.info(f"No logarithmic save steps generated (e.g. args.save_steps is too small or 0).")
+    # ---- END ADDED ----
+
     if rank == 0:
         logger.info("***** Training Configuration Summary *****")
         logger.info(f"   Distributed Training: {is_distributed} (World Size: {world_size}, Rank: {rank})")
@@ -822,6 +862,7 @@ def main():
         logger.info(f"   Total Epochs: {args.num_train_epochs}")
         logger.info(f"   Max Optimizer Steps: {max_train_steps if max_train_steps > 0 else 'Determined by epochs'}")
         logger.info(f"   Effective Warmup Steps: {eff_warmup}")
+        logger.info(f"   Logarithmic Save Steps: {sorted(list(log_save_steps_set)) if log_save_steps_set else 'None'}")
         logger.info(f"   Local Evaluation by this script: {'ENABLED' if args.local_eval else 'DISABLED'}")
         if args.local_eval:
             logger.info(f"      Eval Script: {args.evaluate_script_path}")
@@ -852,6 +893,7 @@ def main():
                 epoch=epoch, global_step=final_global_step, device=device, rank=rank, world_size=world_size,
                 run=run, tokenizer=tokenizer,
                 max_train_steps=max_train_steps,
+                log_save_steps_set=log_save_steps_set  # MODIFIED: Pass the set
             )
             # Check after epoch if max_steps was met, to break outer loop
             if max_train_steps > 0 and final_global_step >= max_train_steps:
@@ -866,18 +908,45 @@ def main():
             logger.info(f"Final Global Optimizer Step Reached: {final_global_step}")
 
         # Final Saving (Rank 0 Only)
+        # Check if any training was done or if it's a fresh start (final_global_step > 0 or (final_global_step==0 and not resumed_from_checkpoint))
+        # The initial checkpoint for step 0 is already saved if not resuming.
+        # We only need to save a "final" checkpoint if we actually trained or if no initial checkpoint was made due to resuming.
+        # The current logic: always save a final checkpoint based on final_global_step.
+        # This is generally fine as it ensures the very last state is captured.
         if rank == 0:
             # Use the 'final_global_step' for naming the last checkpoint directory
-            final_checkpoint_dir = Path(args.output_dir) / f"checkpoint-{final_global_step}"
-            logger.info(
-                f"Saving final training state at step {final_global_step} using save_checkpoint logic to: {final_checkpoint_dir}")
-            # Ensure the final checkpoint is saved, even if save_steps wasn't hit exactly at the end
-            save_checkpoint(args, model, optimizer, lr_scheduler, scaler,
-                            epoch if 'epoch' in locals() else args.num_train_epochs - 1, final_global_step, rank,
-                            tokenizer)
-            logger.info(f"Final training state saved successfully to {final_checkpoint_dir}.")
+            # Avoid re-saving step 0 if it was the only step and an initial checkpoint was already made
+            should_save_final = True
+            if final_global_step == 0 and not resumed_from_checkpoint:
+                # Step 0 was already saved at initialization. No need to save again unless user wants explicit "final_model" dir.
+                # The save_checkpoint for "checkpoint-0" is already done.
+                # We will still proceed to save to "final_model" distinct path.
+                logger.info(f"Final global step is 0 and training started fresh; initial checkpoint already saved.")
+                # To prevent redundant full save_checkpoint call for step 0:
+                # However, if we want the final_model artifacts, we proceed.
+                # The current logic saves checkpoint-{final_global_step} and then final_model.
+                # This is acceptable.
+                pass
 
-            # Also save to a specific 'final_model' directory for clarity, containing only model, tokenizer, and args
+            final_checkpoint_dir = Path(args.output_dir) / f"checkpoint-{final_global_step}"
+            # Only call save_checkpoint if it's not a redundant step 0 save.
+            # Or, simplify: always call it, save_checkpoint is idempotent for directory creation.
+            # The main concern is overwriting or redundant logging.
+            # Let's save if it's not the *exact same* initial checkpoint event.
+            # Condition: if we actually trained (final_global_step > 0) OR if we resumed (so init save didn't happen).
+            if final_global_step > 0 or (final_global_step == 0 and resumed_from_checkpoint):
+                logger.info(
+                    f"Saving final training state at step {final_global_step} using save_checkpoint logic to: {final_checkpoint_dir}")
+                save_checkpoint(args, model, optimizer, lr_scheduler, scaler,
+                                epoch if 'epoch' in locals() else args.num_train_epochs - 1,  # Use last known epoch
+                                final_global_step, rank, tokenizer)
+                logger.info(f"Final training state saved successfully to {final_checkpoint_dir}.")
+            elif final_global_step == 0 and not resumed_from_checkpoint:
+                logger.info(
+                    f"Final step is 0 (fresh start), initial checkpoint at 'checkpoint-0' is already the final state.")
+                # final_checkpoint_dir would be 'checkpoint-0' which was just created.
+
+            # Always save to a specific 'final_model' directory for clarity
             final_model_distinct_path = Path(args.output_dir) / "final_model"
             final_model_distinct_path.mkdir(parents=True, exist_ok=True)
             logger.info(
@@ -893,7 +962,7 @@ def main():
 
             if NEPTUNE_AVAILABLE and run:
                 try:
-                    if final_checkpoint_dir.is_dir():
+                    if final_checkpoint_dir.is_dir():  # This dir should exist from save_checkpoint or init save
                         logger.info(
                             f"Attempting to upload final checkpoint directory '{final_checkpoint_dir.name}' to Neptune.")
                         run[f"checkpoints/final_step_{final_global_step}"].upload_files(str(final_checkpoint_dir))
@@ -911,8 +980,12 @@ def main():
             # If local eval was enabled, consider one final evaluation run on the final model
             if args.local_eval and (args.trigger_standard_eval or args.trigger_priming_eval):
                 logger.info(f"Performing final local evaluation on the model from step {final_global_step}.")
-                # The checkpoint for final_global_step should have just been saved.
-                run_local_evaluation(args, final_checkpoint_dir, final_global_step, rank)
+                # The checkpoint for final_global_step should exist.
+                if final_checkpoint_dir.is_dir():
+                    run_local_evaluation(args, final_checkpoint_dir, final_global_step, rank)
+                else:
+                    logger.warning(
+                        f"Final checkpoint directory {final_checkpoint_dir} not found for final local evaluation. Skipping.")
 
 
     except KeyboardInterrupt:
