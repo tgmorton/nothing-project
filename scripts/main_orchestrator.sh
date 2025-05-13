@@ -1,16 +1,35 @@
 #!/bin/bash
 # main_orchestrator.sh
 
-# --- Source Project Configuration ---
-CONFIG_FILE="../project_config.sh" # Assuming config is in parent directory
-if [ -f "$CONFIG_FILE" ]; then
-    echo "Sourcing project configuration from $CONFIG_FILE"
-    source "$CONFIG_FILE"
+# --- Handle Configuration File Path ---
+# The first command-line argument to this script can be the path to the config file.
+# If no argument is provided, it defaults to ../project_config.sh (relative to this script's location)
+
+CONFIG_FILE_ARG="$1" # Get the first argument
+
+if [ -n "$CONFIG_FILE_ARG" ]; then
+    # Argument provided, use it
+    CONFIG_FILE="$CONFIG_FILE_ARG"
+    echo "Configuration file path provided as argument: $CONFIG_FILE"
 else
-    echo "CRITICAL ERROR: Project configuration file not found at $CONFIG_FILE"
+    # No argument provided, use default relative path
+    # Assuming this script is in a 'scripts' subdir and config is in parent project dir
+    DEFAULT_CONFIG_PATH="$(dirname "$0")/../project_config.sh"
+    CONFIG_FILE="$DEFAULT_CONFIG_PATH"
+    echo "No configuration file path provided as argument. Defaulting to: $CONFIG_FILE"
+fi
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "CRITICAL ERROR: Project configuration file not found at resolved path: $CONFIG_FILE"
+    echo "Please provide the path as an argument or ensure it exists at the default location."
     exit 1
 fi
-# --- End Source Project Configuration ---
+
+# Make the config file path absolute and export it for child scripts
+export CONFIG_FILE_PATH_ABS="$(readlink -f "$CONFIG_FILE")"
+echo "Sourcing project configuration from absolute path: $CONFIG_FILE_PATH_ABS"
+source "$CONFIG_FILE_PATH_ABS"
+# --- End Handle Configuration File Path ---
 
 # Slurm directives will now ideally be set by the user submitting this script,
 # or they can have defaults from the config file if not overridden.
