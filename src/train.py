@@ -454,130 +454,95 @@ def create_small_model_config(base_model_name: str, corpus_size_tag: str, tokeni
     return config
 
 
-def run_local_evaluation(args, checkpoint_dir_to_eval: Path, global_step: int, rank: int):
+def run_local_evaluation(args, checkpoint_dir: Path, global_step: int, rank: int):
     """
-    Runs evaluate.py locally as a subprocess for a SPECIFIC checkpoint.
-    This function is ONLY called if args.local_eval is True and by rank 0.
-    The new evaluate.py can handle a single checkpoint via --checkpoint_path.
+    Runs evaluate.py locally as a subprocess. Only called by rank 0 if args.local_eval is True.
     """
     if rank != 0 or not args.local_eval:
         return
 
     global logger, run  # Access global Neptune run object if used by train.py
 
-    # evaluate.py will create its own output subdirectory based on the checkpoint name
-    # inside the output_dir we provide to it.
-    # For local evals triggered by train.py, let's create a dedicated base for these.
-    # e.g., <train_script_output_dir>/<checkpoint_name>/local_eval_results_from_train/
-    # OR, more simply, let evaluate.py create <eval_base_output_dir>/<checkpoint_name>/
-
-    # args.output_dir is the main output directory for the training run (e.g., SHARED_OUTPUT_DIR_HOST)
-    # Let local evaluations triggered by train.py write into a subfolder of the checkpoint itself.
-    eval_output_base_for_this_ckpt = checkpoint_dir_to_eval / "local_eval_results_from_train"
+    eval_output_base_dir = Path(args.output_dir) / checkpoint_dir.name / "local_eval_results"
     try:
-        eval_output_base_for_this_ckpt.mkdir(parents=True, exist_ok=True)
+        eval_output_base_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         logger.error(
-            f"Failed to create directory for local evaluation output {eval_output_base_for_this_ckpt}: {e}. Skipping local eval for step {global_step}.")
+            f"Failed to create local evaluation output directory {eval_output_base_dir}: {e}. Skipping local eval.")
         return
 
-    logger.info(
-        f"--- Triggering Local Evaluation for Step {global_step} (Checkpoint: {checkpoint_dir_to_eval.name}) ---")
+    logger.info(f"--- Triggering Local Evaluation for Step {global_step} (Checkpoint: {checkpoint_dir.name}) ---")
     python_executable = sys.executable
 
+    # Resolve evaluate_script_path: if it's relative, assume it's relative to the project root (where train.py is likely run from)
+    # For robustness, it's better if evaluate_script_path is absolute or clearly defined.
+    # Assuming it's like 'src/evaluate.py' and PWD is the project root.
     eval_script_path_abs = Path(args.evaluate_script_path).resolve()
     if not eval_script_path_abs.is_file():
         logger.error(
-            f"Local evaluation script not found at resolved path: {eval_script_path_abs}. Check --evaluate_script_path in your config/args.")
+            f"Local evaluation script not found at resolved path: {eval_script_path_abs}. Check --evaluate_script_path.")
         return
 
+    # Construct arguments for evaluate.py
     eval_cmd_list = [
         str(python_executable), str(eval_script_path_abs),
-        "--checkpoint_path", str(checkpoint_dir_to_eval.resolve()),  # evaluate.py uses --checkpoint_path for single
-        "--output_dir", str(eval_output_base_for_this_ckpt.resolve()),
-        # evaluate.py will put results for this checkpoint here
-        "--seed", str(args.seed),
+        "--checkpoint_path", str(checkpoint_dir.resolve()),  # Pass the specific checkpoint being evaluated
+        "--output_dir", str(eval_output_base_dir.resolve()),  # eval.py will manage its outputs here
+        "--seed", str(args.seed),  # Pass training seed for consistency in sampling
         "--num_workers", str(args.num_workers),
-        # Pass the base model name/path from train.py's args (which came from config)
-        # This is what evaluate.py expects for --base_model_name_or_path
-        "--base_model_name_or_path", args.model,
-        "--model_class_name", "GPT2LMHeadModel",  # Assuming, or make this configurable in train.py args too
-        # The --checkpoint_ready_sentinel is for evaluate.py's watch mode, not strictly needed when
-        # train.py directly calls it for a checkpoint known to be ready. But evaluate.py might still expect it.
-        # For a direct call, it's less critical, but if evaluate.py's arg parser requires it, pass the default.
-        "--checkpoint_ready_sentinel", args.checkpoint_ready_sentinel,  # Pass what train.py received
+        "--base_model_name_or_path", args.model,  # So evaluate.py knows the base arch if needed
+        # No need to pass --checkpoint_ready_sentinel to evaluate.py; it consumes ready checkpoints
     ]
 
     if args.use_amp: eval_cmd_list.append("--use_amp")
 
+    # Standard Evaluation Args
     if args.trigger_standard_eval:
         eval_cmd_list.append("--run_standard_eval")
-        if args.validation_dataset_path:  # This was validated in parse_args of train.py
-            # Resolve path if it's relative to project root for train.py
-            valid_path_abs = Path(args.validation_dataset_path)
-            if not valid_path_abs.is_absolute():
-                # Assuming args.validation_dataset_path is relative to HOST_PROJECT_DIR if run via training_job.sh
-                # For a truly local run, you might need to adjust this or ensure it's absolute.
-                # If HOST_PROJECT_DIR is set in env for local run, this could work:
-                host_project_dir_env = os.getenv("HOST_PROJECT_DIR", ".")  # Default to current dir if not set
-                valid_path_abs = (Path(host_project_dir_env) / args.validation_dataset_path).resolve()
+        if args.validation_dataset_path:  # This was validated in parse_args
+            eval_cmd_list.extend(["--validation_dataset_path", str(Path(args.validation_dataset_path).resolve())])
+        # eval_max_samples could be passed too if desired
 
-            eval_cmd_list.extend(["--validation_dataset_path", str(valid_path_abs)])
-            # Pass eval_max_samples if it's an arg to train.py or from config
-            # For now, assume evaluate.py uses its own default if not passed.
-
+    # Priming Evaluation Args
     if args.trigger_priming_eval:
         eval_cmd_list.append("--run_priming_eval")
-        if args.priming_eval_dir_path:  # Validated in parse_args of train.py
-            prime_path_abs = Path(args.priming_eval_dir_path)
-            if not prime_path_abs.is_absolute():
-                host_project_dir_env = os.getenv("HOST_PROJECT_DIR", ".")
-                prime_path_abs = (Path(host_project_dir_env) / args.priming_eval_dir_path).resolve()
-            eval_cmd_list.extend(["--priming_eval_dir_path", str(prime_path_abs)])
-            # Pass priming_eval_max_samples_per_file etc. if available/needed
+        if args.priming_eval_dir_path:  # Validated in parse_args
+            eval_cmd_list.extend(["--priming_eval_dir_path", str(Path(args.priming_eval_dir_path).resolve())])
+        # priming_eval_max_samples_per_file, priming_delimiter could be passed
 
-    # Neptune: If train.py has a Neptune run, evaluate.py could log to a sub-namespace or new run.
-    # The new evaluate.py creates its own session. For local eval triggered by train.py,
-    # you might want it to log to the *same* Neptune run as training.
-    # This requires evaluate.py to accept a --neptune_run_id and for train.py to pass its run ID.
-    if args.neptune_project and NEPTUNE_AVAILABLE and run and hasattr(run,
-                                                                      '_sys_id'):  # 'run' is the Neptune run obj from train.py's main
+    # Neptune details for evaluate.py to log to the *same training run*
+    if args.neptune_project and NEPTUNE_AVAILABLE and run and hasattr(run, '_sys_id'):
         eval_cmd_list.extend(["--neptune_project", args.neptune_project])
         try:
-            training_neptune_run_id = run['_sys_id'].fetch()  # Get current train.py's Neptune run ID
-            eval_cmd_list.extend(["--neptune_run_id", training_neptune_run_id])
-            # evaluate.py will now append to this existing run. It will use the checkpoint_label (from --checkpoint_path)
-            # to namespace its metrics within this run, e.g. "eval_metrics/checkpoint-XXX/perplexity"
-            logger.info(f"Passing current Neptune training run ID ({training_neptune_run_id}) to local evaluate.py.")
+            # Fetch the system ID of the current Neptune training run
+            training_run_id = run['_sys_id'].fetch()
+            eval_cmd_list.extend(["--neptune_run_id", training_run_id])
+            logger.info(f"Passing current Neptune training run ID ({training_run_id}) to local evaluate.py.")
+            # evaluate.py can then append its metrics to this existing run.
+            # It will need to handle how it namespaces its metrics (e.g., eval_metrics/step_X/...)
         except Exception as e_neptune_id:
             logger.warning(f"Could not fetch Neptune run ID for local eval: {e_neptune_id}")
-    # NEPTUNE_API_TOKEN is passed via environment.
+    # NEPTUNE_API_TOKEN should be inherited via environment.
 
-    logger.info(f"Executing local evaluation command for step {global_step}: {' '.join(eval_cmd_list)}")
+    logger.info(f"Executing local evaluation command: {' '.join(eval_cmd_list)}")
     eval_start_time = time.time()
     try:
         process_env = os.environ.copy()
-        # Ensure PYTHONPATH allows evaluate.py to find priming_evaluation if they are in src/
-        # This is usually handled if you run from the project root.
-        # process_env["PYTHONPATH"] = os.getenv("HOST_PROJECT_DIR", ".") + "/src:" + os.getenv("PYTHONPATH", "")
-
+        # Capture output to avoid cluttering main log, but log it on completion/error
         result = subprocess.run(eval_cmd_list, check=True, env=process_env, capture_output=True, text=True)
-        logger.info(
-            f"Local evaluation for step {global_step} (ckpt: {checkpoint_dir_to_eval.name}) completed successfully in {time.time() - eval_start_time:.2f}s.")
-        if result.stdout: logger.info(f"Local Eval STDOUT (step {global_step}):\n{result.stdout.strip()}")
-        if result.stderr: logger.warning(f"Local Eval STDERR (step {global_step}):\n{result.stderr.strip()}")
+        logger.info(f"Local evaluation for step {global_step} completed in {time.time() - eval_start_time:.2f}s.")
+        if result.stdout: logger.info(f"Local Eval STDOUT for step {global_step}:\n{result.stdout.strip()}")
+        if result.stderr: logger.warning(
+            f"Local Eval STDERR for step {global_step}:\n{result.stderr.strip()}")  # Log stderr as warning
     except FileNotFoundError:
-        logger.error(
-            f"Error: Python executable '{python_executable}' or script '{eval_script_path_abs}' not found for local evaluation.")
+        logger.error(f"Error: Python executable '{python_executable}' or script '{eval_script_path_abs}' not found.")
     except subprocess.CalledProcessError as e_subproc:
         logger.error(
-            f"Error running local evaluation script for step {global_step} (ckpt: {checkpoint_dir_to_eval.name}). Return code: {e_subproc.returncode}")
+            f"Error running local evaluation script for step {global_step}. Return code: {e_subproc.returncode}")
         if e_subproc.stdout: logger.error(f"Local Eval STDOUT (Error):\n{e_subproc.stdout.strip()}")
         if e_subproc.stderr: logger.error(f"Local Eval STDERR (Error):\n{e_subproc.stderr.strip()}")
     except Exception as e_generic:
-        logger.error(
-            f"An unexpected error occurred during local evaluation for step {global_step} (ckpt: {checkpoint_dir_to_eval.name}): {e_generic}",
-            exc_info=True)
+        logger.error(f"Unexpected error during local evaluation for step {global_step}: {e_generic}", exc_info=True)
 
 
 def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,

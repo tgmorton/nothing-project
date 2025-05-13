@@ -17,7 +17,7 @@ fi
 # --- End Source Project Configuration ---
 
 #SBATCH --job-name=${TRAIN_JOB_NAME_PREFIX:-train}_${SHARED_RUN_ID} # Job name includes SHARED_RUN_ID
-#SBATCH --partition=${TRAIN_JOB_PARTITION:-general_gpu_p6000}
+#SBATCH --partition=${TRAIN_JOB_PARTITION:-general_gpu_a5000}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=${TRAIN_JOB_CPUS:-8}
