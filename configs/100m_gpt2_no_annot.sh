@@ -2,7 +2,7 @@
 # 100m_gpt2_no_annot.sh
 
 # --- General Project Settings ---
-export HOST_PROJECT_DIR="~/nothing-project" # IMPORTANT: Set this to your actual project path
+export HOST_PROJECT_DIR="/home/AD/thmorton/nothing-project" # IMPORTANT: Set this to your actual project path
 export SIF_IMAGE_PATH_RELATIVE_TO_PROJECT_ROOT="python39_llm_env.sif"
 export DATA_DIR_RELATIVE_TO_PROJECT_ROOT="data"
 export PRIMING_DIR_RELATIVE_TO_PROJECT_ROOT="eval" # Priming CSVs base directory
