@@ -48,11 +48,11 @@ export CONTAINER_DATA_DIR_PATH="/data"
 export CONTAINER_OUTPUT_DIR_PATH="/output_train"
 
 # train.py script arguments for 10m model
-export TRAIN_PY_SCRIPT_RELATIVE_PATH="src/train.py"
+export TRAIN_PY_SCRIPT_RELATIVE_PATH="..src/train.py"
 export TRAIN_PY_MODEL_NAME="gpt2" # Base for tokenizer/config structure
 export TRAIN_PY_MODEL_SIZE="10m"  # Crucial for creating the 10m config in train.py
-export TRAIN_PY_TRAIN_DATASET_RELATIVE_PATH="processed/training_set_10m" # <<< UPDATE to your 10m dataset
-export TRAIN_PY_VALID_DATASET_RELATIVE_PATH="processed/test_set_10m"   # <<< UPDATE to your 10m validation set
+export TRAIN_PY_TRAIN_DATASET_RELATIVE_PATH="..processed/training_set_10m" # <<< UPDATE to your 10m dataset
+export TRAIN_PY_VALID_DATASET_RELATIVE_PATH="..processed/test_set_10m"   # <<< UPDATE to your 10m validation set
 export TRAIN_PY_NUM_EPOCHS="2"
 export TRAIN_PY_BATCH_SIZE="8"
 export TRAIN_PY_GRAD_ACCUM_STEPS="16"
@@ -67,7 +67,7 @@ export TRAIN_PY_SAVE_STEPS="200"   # Save every 200 steps
 
 # Settings for LOCAL EVALUATION (triggered by train.py)
 export TRAIN_PY_LOCAL_EVAL="true" # Enable local evaluation
-export TRAIN_PY_EVALUATE_SCRIPT_PATH="src/evaluate.py" # Path to the new evaluate.py
+export TRAIN_PY_EVALUATE_SCRIPT_PATH="..src/evaluate.py" # Path to the new evaluate.py
 export TRAIN_PY_TRIGGER_STANDARD_EVAL="true" # Trigger standard perplexity
 export TRAIN_PY_TRIGGER_PRIMING_EVAL="true"  # Trigger priming eval
 # Path to priming data dir for train.py to pass to evaluate.py during local eval
