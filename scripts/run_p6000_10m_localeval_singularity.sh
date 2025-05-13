@@ -111,7 +111,7 @@ singularity exec --nv \
         --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
         --output_dir "${CONTAINER_RUN_OUTPUT_DIR}" \
         \
-        --num_train_epochs 20 \
+        --num_train_epochs 2 \
         --per_device_train_batch_size 16 \
         --gradient_accumulation_steps 8 \
         \
@@ -127,9 +127,9 @@ singularity exec --nv \
         --seed 42 \
         \
         --logging_steps 50 \
-        --eval_steps 100 \
-        --save_steps 100 \
-        --priming_eval_steps 100 \
+        --eval_steps 200 \
+        --save_steps 200 \
+        --priming_eval_steps 200 \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_run_name "${NEPTUNE_RUN_NAME}" \
