@@ -56,8 +56,6 @@ mkdir -p "$SHARED_OUTPUT_DIR_HOST"
 #SBATCH --gres=gpu:${TRAIN_JOB_GPU_REQUEST:-1} # CRITICAL for single GPU: ensure "1" or "type:1"
 #SBATCH --mail-type=${TRAIN_JOB_MAIL_TYPE:-END,FAIL}
 #SBATCH --mail-user=${TRAIN_JOB_MAIL_USER:-your_email@example.com}
-#SBATCH --output=logs/%x_%j.out
-#SBATCH --error=logs/%x_%j.err
 
 set -e
 echo "=== Training Job Script Started: $(date) ==="
