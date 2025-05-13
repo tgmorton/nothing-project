@@ -7,7 +7,7 @@ export SIF_IMAGE_PATH_RELATIVE_TO_PROJECT_ROOT="python39_llm_env.sif"
 export DATA_DIR_RELATIVE_TO_PROJECT_ROOT="data"
 export PRIMING_DIR_RELATIVE_TO_PROJECT_ROOT="eval" # Priming CSVs base directory
 export OUTPUT_BASE_DIR_RELATIVE_TO_PROJECT_ROOT="src/.output" # Base for SHARED_RUN_ID folders
-export CHILD_JOB_LOGS_DIR_RELATIVE_TO_PROJECT_ROOT="..logs/main_orch_children" # Base for child Slurm logs from main_orchestrator
+export CHILD_JOB_LOGS_DIR_RELATIVE_TO_PROJECT_ROOT="logs/main_orch_children" # Base for child Slurm logs from main_orchestrator
 export CHECKPOINT_READY_SENTINEL_FILENAME="EVAL_READY.txt"
 export TRAINING_COMPLETION_SENTINEL_FILENAME="TRAINING_COMPLETED.txt"
 
