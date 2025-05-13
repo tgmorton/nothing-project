@@ -203,83 +203,40 @@ def set_seed(seed_value, rank=0):  # Added rank for conditional logging
         print(f"INFO (Rank {rank} pre-log): {log_msg}")
 
 
-# In OrchestratorMay13/src/train.py
-
 def setup_distributed(args):
-    """Sets up DDP environment if applicable, otherwise confirms single-process mode."""
+    """Sets up DDP environment."""
     import torch
     import os
-    global logger
+    global logger  # logger may not be fully initialized here
     is_dist, rank, world_size, local_rank = False, 0, 1, 0
 
-    # Try to detect Torchrun/torch.distributed.launch environment first
-    if 'WORLD_SIZE' in os.environ and int(os.environ.get('WORLD_SIZE', '1')) > 1 and \
-            'RANK' in os.environ and 'LOCAL_RANK' in os.environ:
-        is_dist = True
-        try:
-            rank = int(os.environ["RANK"])
-            world_size = int(os.environ["WORLD_SIZE"])
-            local_rank = int(os.environ["LOCAL_RANK"])
-
-            if not torch.cuda.is_available(): raise RuntimeError("DDP (Torchrun) needs CUDA.")
-
-            torch.distributed.init_process_group(backend='nccl',
-                                                 init_method='env://')  # env:// uses RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT
-            torch.cuda.set_device(local_rank)
-
-            msg = (
-                f"DDP (Torchrun/env) Initialized: Rank {rank}/{world_size}, LocalRank {local_rank} on cuda:{local_rank}. "
-                f"Master: {os.environ.get('MASTER_ADDR', 'N/A')}:{os.environ.get('MASTER_PORT', 'N/A')}")
-            if logger and logger.isEnabledFor(logging.INFO):
-                logger.info(msg)
-            else:
-                print(f"INFO (Rank {rank} pre-log): {msg}")
-            torch.distributed.barrier()
-        except Exception as e:
-            print(f"CRITICAL ERROR (Rank {rank} pre-log): DDP (Torchrun/env) init failed: {e}")
-            traceback.print_exc()
-            if torch.distributed.is_initialized():
-                torch.distributed.destroy_process_group()
-            sys.exit(1)
-
-    # Else, try to detect Slurm DDP environment (specifically for multi-task jobs)
-    elif 'SLURM_NPROCS' in os.environ and int(os.environ.get('SLURM_NPROCS', '1')) > 1 and \
-            'SLURM_PROCID' in os.environ:
+    # Check for Slurm environment variables first for DDP
+    if 'SLURM_PROCID' in os.environ:
         is_dist = True
         try:
             rank = int(os.environ['SLURM_PROCID'])
             world_size = int(os.environ['SLURM_NPROCS'])
+            local_rank = int(
+                os.environ.get('SLURM_LOCALID', rank % torch.cuda.device_count()))  # SLURM_LOCALID might not be set
 
-            # SLURM_LOCALID is preferred if set by srun for process-to-GPU mapping
-            if 'SLURM_LOCALID' in os.environ:
-                local_rank = int(os.environ['SLURM_LOCALID'])
-            else:  # Fallback if only global rank is available (less common for direct srun mapping)
-                local_rank = rank % torch.cuda.device_count() if torch.cuda.is_available() else 0
-
-            # Ensure MASTER_ADDR and MASTER_PORT are set for Slurm DDP
-            # This often requires srun to pass the hostname of the first task, or a launch script to set it.
+            os.environ['RANK'] = str(rank)
+            os.environ['WORLD_SIZE'] = str(world_size)
+            # MASTER_ADDR and MASTER_PORT need to be set for torch.distributed.init_process_group
+            # Slurm usually handles this, or a helper script does. If not, this needs robust handling.
+            # Assuming srun or a launch utility sets these:
             if 'MASTER_ADDR' not in os.environ:
-                # A common way to get the master address in Slurm for the first task
-                master_node_hostname = os.popen(
-                    "host $(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1) | awk '{print $1}'"
-                ).read().strip()
-                if not master_node_hostname: master_node_hostname = 'localhost'  # Fallback
-                os.environ['MASTER_ADDR'] = master_node_hostname
-                if rank == 0: print(
-                    f"INFO (Rank {rank} pre-log): MASTER_ADDR dynamically set for Slurm to {os.environ['MASTER_ADDR']}")
-
+                os.environ['MASTER_ADDR'] = 'localhost'  # Fallback, not robust for multi-node
+                if rank == 0: print("Warning: MASTER_ADDR not set, defaulting to localhost.")
             if 'MASTER_PORT' not in os.environ:
-                os.environ['MASTER_PORT'] = '29500'  # Default port, ensure it's free or make configurable
-                if rank == 0: print(
-                    f"INFO (Rank {rank} pre-log): MASTER_PORT defaulted for Slurm to {os.environ['MASTER_PORT']}")
+                os.environ['MASTER_PORT'] = '29500'  # Fallback, ensure unique
+                if rank == 0: print("Warning: MASTER_PORT not set, defaulting to 29500.")
 
             if not torch.cuda.is_available(): raise RuntimeError("DDP (Slurm) needs CUDA.")
 
-            torch.distributed.init_process_group(backend='nccl', init_method='env://')
+            torch.distributed.init_process_group(backend='nccl', rank=rank, world_size=world_size)
             torch.cuda.set_device(local_rank)
 
-            msg = (f"DDP (Slurm) Initialized: Rank {rank}/{world_size}, LocalRank {local_rank} on cuda:{local_rank}. "
-                   f"Master: {os.environ.get('MASTER_ADDR', 'N/A')}:{os.environ.get('MASTER_PORT', 'N/A')}")
+            msg = f"DDP (Slurm) Init: Rank {rank}/{world_size}, LocalRank {local_rank} on cuda:{local_rank}"
             if logger and logger.isEnabledFor(logging.INFO):
                 logger.info(msg)
             else:
@@ -288,21 +245,35 @@ def setup_distributed(args):
         except Exception as e:
             print(f"CRITICAL ERROR (Rank {rank} pre-log): DDP (Slurm) init failed: {e}")
             traceback.print_exc()
-            if torch.distributed.is_initialized():
-                torch.distributed.destroy_process_group()
-            sys.exit(1)
-    else:
-        # This block is executed if DDP environment variables are not found or don't indicate multi-process
-        is_dist = False
-        rank = 0
-        world_size = 1
-        local_rank = 0  # Meaningless in non-DDP but set for consistency
-        msg = "DDP environment not detected or configured for single process. Running in non-distributed mode."
-        if rank == 0:  # Only print/log this once
+            sys.exit(1)  # Critical failure
+
+    elif 'WORLD_SIZE' in os.environ and int(os.environ.get('WORLD_SIZE', 1)) > 1:  # Torchrun/Elastic
+        is_dist = True
+        try:
+            rank = int(os.environ["RANK"])
+            world_size = int(os.environ["WORLD_SIZE"])
+            local_rank = int(os.environ["LOCAL_RANK"])
+            if not torch.cuda.is_available(): raise RuntimeError("DDP (Torchrun) needs CUDA.")
+
+            torch.distributed.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+            torch.cuda.set_device(local_rank)
+
+            msg = f"DDP (Torchrun) Init: Rank {rank}/{world_size}, LocalRank {local_rank} on cuda:{local_rank}"
             if logger and logger.isEnabledFor(logging.INFO):
                 logger.info(msg)
             else:
                 print(f"INFO (Rank {rank} pre-log): {msg}")
+            torch.distributed.barrier()
+        except Exception as e:
+            print(f"CRITICAL ERROR (Rank {rank} pre-log): DDP (Torchrun) init failed: {e}")
+            traceback.print_exc()
+            sys.exit(1)  # Critical failure
+    else:
+        msg = "DDP not enabled (single process)."
+        if logger and logger.isEnabledFor(logging.INFO):
+            logger.info(msg)
+        else:
+            print(f"INFO (Rank {rank} pre-log): {msg}")
 
     return is_dist, rank, world_size, local_rank
 
