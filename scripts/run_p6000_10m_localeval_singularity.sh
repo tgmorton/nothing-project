@@ -46,7 +46,7 @@ fi
 
 # --- Define Paths on Host (Unchanged) ---
 HOST_PROJECT_DIR="/home/AD/thmorton/nothing-project"
-HOST_SIF_PATH="/home/AD/thmorton/python39_llm_env.sif"
+HOST_SIF_PATH="/home/AD/thmorton/nothing-project/python39_llm_env.sif"
 HOST_DATA_BASE_DIR="${HOST_PROJECT_DIR}/data"
 HOST_OUTPUT_BASE_DIR="${HOST_PROJECT_DIR}/src/.output"
 HOST_PRIMING_BASE_DIR="${HOST_PROJECT_DIR}/eval"
