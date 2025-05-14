@@ -30,7 +30,7 @@ module load singularity/4.1.1 cuda/11.8 # Adjust versions if needed
 
 # --- Define Paths on Host ---
 HOST_PROJECT_DIR="/home/AD/thmorton/nothing-project" # Your main project directory
-HOST_SIF_PATH="/home/AD/thmorton/python39_llm_env.sif" # Your Singularity image
+HOST_SIF_PATH="/home/AD/thmorton/nothing-project/python39_annotate_onnx.sif" # Your Singularity image
 
 # Data paths for annotation
 HOST_RAW_DATA_DIR="${HOST_PROJECT_DIR}/data/raw/text_data/train_10M" # INPUT: Where your .train files are
