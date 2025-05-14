@@ -340,12 +340,13 @@ def run_local_evaluation(args, checkpoint_dir: Path, global_step: int, rank: int
     Runs evaluate.py locally as a subprocess. Only rank 0 executes.
     """
     if rank != 0: return
+
+    global logger, run
     # Ensure that evaluation should run based on triggers
     if not (args.trigger_standard_eval or args.trigger_priming_eval):
         logger.info(f"Local evaluation for step {global_step} skipped: Neither standard nor priming eval is triggered.")
         return
 
-    global logger, run
 
     eval_output_dir = checkpoint_dir / "eval_results"
     try:
