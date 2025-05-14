@@ -76,9 +76,9 @@ mkdir -p "${HOST_PROJECT_DIR}/logs"
 echo "Starting Python training script (with Local Eval) inside Singularity container..."
 
 # --- Define paths relative to container mount points (Unchanged) ---
-CONTAINER_TRAIN_DATA_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m"
-CONTAINER_VALID_DATA_PATH="${CONTAINER_DATA_DIR}/processed/training_set_10m"
-CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/priming-corpuses"
+CONTAINER_TRAIN_DATA_PATH="${CONTAINER_DATA_DIR}/processed/training_set_10m"
+CONTAINER_VALID_DATA_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m"
+CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/priming-corpuses_no_null"
 CONTAINER_EVAL_SCRIPT_PATH="${CONTAINER_WORKSPACE}/src/evaluate.py" # Path to evaluate.py inside container
 
 # --- Define Neptune args (Modified Tags) ---

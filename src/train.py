@@ -90,12 +90,12 @@ def parse_args():
     parser.add_argument("--save_steps", type=int, default=500, help="Save checkpoint every X steps.")
 
     # === LOCAL Evaluation Triggering Control (these are used if --local_eval is set) ===
+    # Note: eval_steps and priming_eval_steps are now less about *when* to eval independently,
+    # and more about *if* a certain type of eval is enabled when a checkpoint is saved.
     parser.add_argument("--eval_steps", type=int, default=500,
-                        help="Trigger local evaluation every X steps (if --local_eval).")
+                        help="Legacy: Used to determine if standard eval is enabled alongside checkpoint saves. Not an independent trigger anymore.")
     parser.add_argument("--local_eval", action="store_true",
-                        help="Run evaluation script locally as subprocess. If False, no evaluation is triggered by this script.")
-    # --submit_eval_script_path is NO LONGER USED by train.py for Slurm submission
-    # parser.add_argument("--submit_eval_script_path", type=str, default=None, help="Path to the Slurm script for submitting eval jobs (DEPRECATED in this script).")
+                        help="Run evaluation script locally as subprocess on ALL saved checkpoints. If False, no evaluation is triggered by this script.")
     parser.add_argument("--evaluate_script_path", type=str, default="src/evaluate.py",
                         help="Path to evaluate.py (required if --local_eval).")
     parser.add_argument("--validation_dataset_path", type=str, default=None,
@@ -103,11 +103,12 @@ def parse_args():
     parser.add_argument("--priming_eval_dir_path", type=str, default=None,
                         help="Directory containing priming CSVs (passed to local eval script if priming eval enabled).")
     parser.add_argument("--trigger_standard_eval", action="store_true", default=False,
-                        help="Trigger/run standard evaluation (if --local_eval).")
+                        help="Enable standard evaluation when checkpoints are saved (if --local_eval).")
     parser.add_argument("--trigger_priming_eval", action="store_true", default=False,
-                        help="Trigger/run priming evaluation (if --local_eval).")
+                        help="Enable priming evaluation when checkpoints are saved (if --local_eval).")
     parser.add_argument("--priming_eval_steps", type=int, default=None,
-                        help="Trigger/run priming eval every X steps (if --local_eval). Defaults to --eval_steps.")
+                        # Kept for arg consistency, but not an independent trigger.
+                        help="Legacy: Used to determine if priming eval is enabled alongside checkpoint saves. Not an independent trigger anymore. Defaults to --eval_steps.")
 
     # === Neptune Logging ===
     parser.add_argument("--neptune_project", type=str, default=None, help="Neptune project name.")
@@ -117,7 +118,7 @@ def parse_args():
     args = parser.parse_args()
 
     # Set defaults
-    if args.priming_eval_steps is None: args.priming_eval_steps = args.eval_steps
+    if args.priming_eval_steps is None: args.priming_eval_steps = args.eval_steps  # Retain for flag-like behavior
 
     # Validation for Training
     if not args.train_dataset_path: parser.error("--train_dataset_path required for training.")
@@ -126,6 +127,9 @@ def parse_args():
 
     # Validation for LOCAL evaluation
     if args.local_eval:
+        if not (args.trigger_standard_eval or args.trigger_priming_eval):
+            parser.error(
+                "--local_eval is specified, but neither --trigger_standard_eval nor --trigger_priming_eval is set. No evaluation would run.")
         if not Path(args.evaluate_script_path).is_file():
             parser.error(f"--local_eval specified, but evaluation script not found: {args.evaluate_script_path}")
         if args.trigger_standard_eval and not args.validation_dataset_path:
@@ -145,8 +149,6 @@ def parse_args():
 
 
 # --- Keep Helper Functions Needed for Training ---
-# get_device, setup_logging, set_seed, setup_distributed, save_checkpoint, create_small_model_config
-# (Implementations are the same as previous version)
 def get_device():
     """Gets the appropriate device for PyTorch computations."""
     import torch;
@@ -178,7 +180,6 @@ def setup_logging(log_level=logging.INFO, rank=0):
     logging.basicConfig(level=level, format=fmt, datefmt=dfmt, force=True)
     logger = logging.getLogger(__name__)  # Get logger for this module
     if rank == 0: logger.info("Logging setup complete (Rank 0).")
-    # For other ranks, logger will be created but effectively silenced by level
 
 
 def set_seed(seed_value):
@@ -191,10 +192,9 @@ def set_seed(seed_value):
     np.random.seed(seed_value);
     torch.manual_seed(seed_value)
     if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed_value)
-    # Check if logger is initialized and not disabled for rank 0
     if logger and (not hasattr(logger, 'disabled') or not logger.disabled):
         logger.info(f"Set random seed: {seed_value}")
-    else:  # Fallback for early calls or non-rank 0
+    else:
         if int(os.environ.get("RANK", "0")) == 0: print(
             f"Set random seed: {seed_value} (logger N/A or disabled at call time)")
 
@@ -218,10 +218,9 @@ def setup_distributed(args):
             if logger and (not hasattr(logger, 'disabled') or not logger.disabled):
                 logger.info(msg)
             else:
-                print(f"Info: {msg}")  # Fallback if logger not ready
-            torch.distributed.barrier()  # Sync after setup
+                print(f"Info: {msg}")
+            torch.distributed.barrier()
         except Exception as e:
-            # Use print as logger might not be fully setup or for critical DDP failure
             print(f"CRITICAL ERROR: DDP init failed: {e}")
             traceback.print_exc()
             raise
@@ -305,7 +304,6 @@ def save_checkpoint(args, model, optimizer, lr_scheduler, scaler, epoch, global_
 def create_small_model_config(base_model_name: str, corpus_size_tag: str, tokenizer: PreTrainedTokenizer,
                               logger_instance: logging.Logger):
     """Creates a small model configuration based on a corpus size tag."""
-    # Use passed logger_instance instead of global logger for clarity if this function is moved
     try:
         config = AutoConfig.from_pretrained(base_model_name)
         if logger_instance: logger_instance.info(f"Loaded base config structure from: {base_model_name}")
@@ -329,7 +327,7 @@ def create_small_model_config(base_model_name: str, corpus_size_tag: str, tokeni
         config.vocab_size = len(tokenizer)
     else:
         logger_instance.warning(f"Base config type {type(config)} might not have 'vocab_size'.")
-    if hasattr(config, 'use_cache'): config.use_cache = False  # Good practice for training
+    if hasattr(config, 'use_cache'): config.use_cache = False
     if logger_instance:
         logger_instance.info(f"Final SMALL config params: n_layer={getattr(config, 'n_layer', 'N/A')}, "
                              f"n_head={getattr(config, 'n_head', 'N/A')}, n_embd={getattr(config, 'n_embd', 'N/A')}, "
@@ -337,29 +335,30 @@ def create_small_model_config(base_model_name: str, corpus_size_tag: str, tokeni
     return config
 
 
-# --- Modified run_local_evaluation Function ---
-
 def run_local_evaluation(args, checkpoint_dir: Path, global_step: int, rank: int):
     """
-    Runs evaluate.py locally as a subprocess.
-    This function is ONLY called if args.local_eval is True.
+    Runs evaluate.py locally as a subprocess. Only rank 0 executes.
     """
-    if rank != 0: return  # Only rank 0 runs evaluation
-    global logger, run  # Access global Neptune run object
+    if rank != 0: return
+    # Ensure that evaluation should run based on triggers
+    if not (args.trigger_standard_eval or args.trigger_priming_eval):
+        logger.info(f"Local evaluation for step {global_step} skipped: Neither standard nor priming eval is triggered.")
+        return
 
-    eval_output_dir = checkpoint_dir / "eval_results"  # Define where eval results should go
+    global logger, run
+
+    eval_output_dir = checkpoint_dir / "eval_results"
     try:
         eval_output_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         logger.error(
-            f"Failed to create local evaluation output directory {eval_output_dir}: {e}. Skipping local evaluation.")
+            f"Failed to create local evaluation output directory {eval_output_dir}: {e}. Skipping local evaluation for step {global_step}.")
         return
 
-    logger.info(f"--- Running Local Evaluation for Step {global_step} ---")
-    python_executable = sys.executable  # Use the same python executable running this script
+    logger.info(f"--- Running Local Evaluation for Step {global_step} on Checkpoint: {checkpoint_dir} ---")
+    python_executable = sys.executable
     eval_script_path = Path(args.evaluate_script_path).resolve()
 
-    # Construct arguments for evaluate.py
     eval_args_list = [
         str(python_executable),
         str(eval_script_path),
@@ -374,50 +373,49 @@ def run_local_evaluation(args, checkpoint_dir: Path, global_step: int, rank: int
         eval_args_list.append("--run_standard_eval")
         if args.validation_dataset_path:
             eval_args_list.extend(["--validation_dataset_path", str(Path(args.validation_dataset_path).resolve())])
-        # No warning here, parse_args should have caught missing path if trigger_standard_eval is true
+        else:  # Should have been caught by parse_args, but as a safeguard:
+            logger.warning(
+                "Standard evaluation triggered, but no validation_dataset_path provided. Standard eval might fail or be skipped by evaluate.py.")
 
     if args.trigger_priming_eval:
         eval_args_list.append("--run_priming_eval")
         if args.priming_eval_dir_path:
             eval_args_list.extend(["--priming_eval_dir_path", str(Path(args.priming_eval_dir_path).resolve())])
-        # No warning here, parse_args should have caught missing path
+        else:  # Should have been caught by parse_args
+            logger.warning(
+                "Priming evaluation triggered, but no priming_eval_dir_path provided. Priming eval might fail or be skipped by evaluate.py.")
 
-    # Add Neptune details if configured so local eval can log
     if args.neptune_project:
         eval_args_list.extend(["--neptune_project", args.neptune_project])
-    # Pass the current training Neptune run ID if available
     current_neptune_run_id = None
     if NEPTUNE_AVAILABLE and run and hasattr(run, '_sys_id'):
         try:
             current_neptune_run_id = run['_sys_id'].fetch()
             eval_args_list.extend(
-                ["--neptune_run_id", current_neptune_run_id])  # For evaluate.py to potentially log to the same run
+                ["--neptune_run_id", current_neptune_run_id])
             logger.info(f"Passing current Neptune run ID ({current_neptune_run_id}) to local evaluate.py.")
         except Exception as e:
             logger.warning(f"Could not fetch Neptune run ID for local eval: {e}")
-    # NEPTUNE_API_TOKEN should be in the environment for evaluate.py to pick up
 
     logger.info(f"Executing local evaluation command:")
     logger.info(f"{' '.join(eval_args_list)}")
 
     eval_start_time = time.time()
     try:
-        # Run evaluation synchronously, allow output to stream to main log
-        # Using os.environ.copy() ensures the subprocess gets the current environment,
-        # including CUDA_VISIBLE_DEVICES, NEPTUNE_API_TOKEN etc.
         process_env = os.environ.copy()
         result = subprocess.run(eval_args_list, check=True, env=process_env, capture_output=True, text=True)
-        logger.info(f"Local evaluation process completed successfully in {time.time() - eval_start_time:.2f} seconds.")
-        if result.stdout: logger.info(f"Local Eval STDOUT:\n{result.stdout}")
-        if result.stderr: logger.warning(f"Local Eval STDERR:\n{result.stderr}")  # Log stderr as warning
+        logger.info(
+            f"Local evaluation process for step {global_step} completed successfully in {time.time() - eval_start_time:.2f} seconds.")
+        if result.stdout: logger.info(f"Local Eval STDOUT (Step {global_step}):\n{result.stdout}")
+        if result.stderr: logger.warning(f"Local Eval STDERR (Step {global_step}):\n{result.stderr}")
 
     except FileNotFoundError:
         logger.error(
-            f"Error: Python executable '{python_executable}' or script '{eval_script_path}' not found for local evaluation.")
+            f"Error: Python executable '{python_executable}' or script '{eval_script_path}' not found for local evaluation (Step {global_step}).")
     except subprocess.CalledProcessError as e:
         logger.error(f"Error running local evaluation script for step {global_step}. Return code: {e.returncode}")
-        logger.error(f"Local Eval STDOUT:\n{e.stdout}")
-        logger.error(f"Local Eval STDERR:\n{e.stderr}")
+        logger.error(f"Local Eval STDOUT (Step {global_step}):\n{e.stdout}")
+        logger.error(f"Local Eval STDERR (Step {global_step}):\n{e.stderr}")
     except Exception as e:
         logger.error(f"An unexpected error occurred during local evaluation for step {global_step}: {e}",
                      exc_info=True)
@@ -425,11 +423,10 @@ def run_local_evaluation(args, checkpoint_dir: Path, global_step: int, rank: int
 
 def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
                 train_sampler, epoch, global_step, device, rank, world_size, run, tokenizer,
-                max_train_steps, log_save_steps_set):  # MODIFIED: Added log_save_steps_set
+                max_train_steps, log_save_steps_set):
     """
     Runs one training epoch.
-    Saves checkpoints and triggers local evaluation periodically if enabled.
-    Stops early if max_train_steps is reached.
+    Saves checkpoints and triggers local evaluation on saved checkpoints if enabled.
     """
     global logger
     import torch;
@@ -493,7 +490,7 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
             scaled_loss.backward()
         total_loss_since_logging += current_loss_value
         steps_since_logging += 1
-        last_logged_loss = current_loss_value  # Keep track of the most recent micro-batch loss for progress bar
+        last_logged_loss = current_loss_value
 
         if (step + 1) % args.gradient_accumulation_steps == 0:
             try:
@@ -511,13 +508,13 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
                 global_step += 1
             except Exception as e:
                 logger.error(f"Optimizer step error: {e}", exc_info=True)
-                optimizer.zero_grad(set_to_none=True)  # Ensure gradients are cleared
+                optimizer.zero_grad(set_to_none=True)
 
             if rank == 0 and global_step % args.logging_steps == 0 and steps_since_logging > 0:
                 avg_loss = total_loss_since_logging / steps_since_logging
                 lr = lr_scheduler.get_last_lr()[0] if hasattr(lr_scheduler,
                                                               'get_last_lr') and lr_scheduler.get_last_lr() else \
-                    optimizer.param_groups[0]['lr']
+                optimizer.param_groups[0]['lr']
                 logger.info(f"Epoch {epoch + 1} | Step {global_step}: Avg Train Loss = {avg_loss:.4f}, LR = {lr:.6e}")
                 if NEPTUNE_AVAILABLE and run:
                     try:
@@ -530,48 +527,31 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
                         logger.warning(f"Neptune train log failed at step {global_step}: {e}")
                 total_loss_since_logging, steps_since_logging = 0.0, 0
 
-            # ---- MODIFIED: Checkpoint saving logic ----
             time_for_log_save = global_step in log_save_steps_set
-            # Regular save: ensure it's enabled, it's a multiple, and it's not step 0 (handled by init checkpoint)
             time_for_regular_save = args.save_steps > 0 and global_step > 0 and global_step % args.save_steps == 0
-
             should_save_this_step = time_for_log_save or time_for_regular_save
 
             if should_save_this_step:
-                # ---- END MODIFIED ----
-                if is_distributed: torch.distributed.barrier()
+                if is_distributed: torch.distributed.barrier()  # Sync before save
                 save_checkpoint(args, model, optimizer, lr_scheduler, scaler, epoch, global_step, rank, tokenizer)
-                if is_distributed: torch.distributed.barrier()
+                if is_distributed: torch.distributed.barrier()  # Sync after save by rank 0
 
-            # --- LOCAL Evaluation Trigger Step (Only if args.local_eval is True) ---
-            if args.local_eval:  # Check this first
-                time_for_std_eval = args.trigger_standard_eval and global_step > 0 and global_step % args.eval_steps == 0
-                time_for_prime_eval = args.trigger_priming_eval and global_step > 0 and global_step % args.priming_eval_steps == 0
-                trigger_eval_now = time_for_std_eval or time_for_prime_eval
-
-                if trigger_eval_now:
-                    checkpoint_dir = Path(args.output_dir) / f"checkpoint-{global_step}"
-                    if rank == 0 and not checkpoint_dir.is_dir():
-                        logger.warning(
-                            f"Local eval: Checkpoint {checkpoint_dir} not found for eval trigger. "
-                            f"This might happen if save_steps/log_steps do not align with eval_steps. Saving now as a fallback."
-                        )
-                        if is_distributed: torch.distributed.barrier()
-                        save_checkpoint(args, model, optimizer, lr_scheduler, scaler, epoch, global_step, rank,
-                                        tokenizer)
-                        if is_distributed: torch.distributed.barrier()
-
-                    if rank == 0 and checkpoint_dir.is_dir():
-                        run_local_evaluation(args, checkpoint_dir, global_step, rank)  # Modified function call
-                    elif rank == 0:
+                # ---- MODIFIED: Evaluate if local_eval is enabled, after any save ----
+                if args.local_eval and rank == 0:  # run_local_evaluation itself checks trigger flags
+                    checkpoint_dir_for_eval = Path(args.output_dir) / f"checkpoint-{global_step}"
+                    # save_checkpoint was just called by rank 0.
+                    if checkpoint_dir_for_eval.is_dir():  # Should always be true if save_checkpoint succeeded
+                        run_local_evaluation(args, checkpoint_dir_for_eval, global_step, rank)
+                    else:
+                        # This case should be rare if save_checkpoint works.
                         logger.error(
-                            f"Local eval: Failed to find or save checkpoint {checkpoint_dir}. Cannot run local evaluation.")
-            elif rank == 0 and global_step > 0 and (
-                    global_step % args.eval_steps == 0 or global_step % args.priming_eval_steps == 0):
-                # Log if it *would* have been an eval step but local_eval is off
-                if args.trigger_standard_eval or args.trigger_priming_eval:
-                    logger.info(
-                        f"Step {global_step}: Local evaluation is disabled via --local_eval. Evaluation will be handled by external monitor if configured.")
+                            f"Checkpoint directory {checkpoint_dir_for_eval} was expected but not found for evaluation after saving at step {global_step}. Skipping evaluation.")
+                # No barrier needed after rank 0 local eval for other ranks in this immediate context.
+                # ---- END MODIFIED ----
+
+            # If local_eval is enabled but it's not a save step, no evaluation occurs here,
+            # adhering to "evaluate on all saved checkpoints".
+            # The old logic for eval_steps not aligning with save_steps is removed.
 
             if max_train_steps > 0 and global_step >= max_train_steps:
                 if rank == 0: logger.info(
@@ -591,34 +571,32 @@ def train_epoch(args, model, optimizer, lr_scheduler, scaler, train_dataloader,
 # --- Main Function (Modified Setup) ---
 def main():
     """Main function to parse arguments, set up, and run training."""
-    global run, logger  # Declare run and logger as global
+    global run, logger
 
-    args = parse_args()  # Parse arguments first
-    # Setup DDP and logging early, as they affect how messages are displayed
+    args = parse_args()
     is_distributed, rank, world_size, local_rank = setup_distributed(args)
-    setup_logging(rank=rank)  # logger is initialized here
-    # Now logger is safe to use by rank 0
+    setup_logging(rank=rank)
 
     if rank == 0: logger.info(f"***** Starting Training Script (train.py) *****")
     if rank == 0: logger.info(f"Running with Arguments: {vars(args)}")
     if rank == 0 and not args.local_eval:
         logger.info("Local evaluation triggering by this script is DISABLED (--local_eval not set).")
-        logger.info("Evaluation, if configured, will be handled by an external monitoring script.")
     elif rank == 0 and args.local_eval:
-        logger.info("Local evaluation triggering by this script is ENABLED (--local_eval set).")
+        logger.info("Local evaluation (on all saved checkpoints) by this script is ENABLED (--local_eval set).")
+        if not (args.trigger_standard_eval or args.trigger_priming_eval):
+            logger.warning(
+                "Local evaluation is enabled, but neither --trigger_standard_eval nor --trigger_priming_eval is set. No evaluation will run.")
 
-    # Setup Device and Seed
-    device = get_device()  # Depends on LOCAL_RANK from DDP setup
-    set_seed(args.seed + rank)  # Seed per rank for DDP
+    device = get_device()
+    set_seed(args.seed + rank)
 
-    # Neptune Setup (Rank 0 Only)
-    run = None  # Initialize run to None
+    run = None
     if rank == 0 and NEPTUNE_AVAILABLE and args.neptune_project:
         try:
             run = neptune.init_run(project=args.neptune_project, name=args.neptune_run_name, tags=args.neptune_tags)
             args_log = {}
             logger.info("Processing arguments for Neptune logging...")
-            for k, v_item in vars(args).items():  # Renamed v to v_item to avoid conflict
+            for k, v_item in vars(args).items():
                 if isinstance(v_item, Path):
                     args_log[k] = str(v_item)
                 elif isinstance(v_item, list):
@@ -632,17 +610,13 @@ def main():
                 logger.info("Successfully logged processed parameters to Neptune.")
             except Exception as neptune_log_e:
                 logger.error(f"Failed to log processed parameters to Neptune: {neptune_log_e}")
-
             logger.info(f"Neptune logging enabled. Run URL: {run.get_url()}")
-            # run.sync() # sync can sometimes be problematic, often not strictly needed immediately
         except Exception as e:
             logger.error(f"Neptune init failed: {e}. Neptune logging disabled for this run.", exc_info=True)
-            run = None  # Ensure run is None if init fails
+            run = None
     elif rank == 0:
-        logger.info(
-            "Neptune logging is disabled (either NEPTUNE_AVAILABLE is False or --neptune_project not specified).")
+        logger.info("Neptune logging is disabled.")
 
-    # === Model & Tokenizer Loading ===
     model, tokenizer, config = None, None, None
     try:
         if rank == 0: logger.info(
@@ -652,33 +626,25 @@ def main():
             if tokenizer.eos_token:
                 tokenizer.pad_token = tokenizer.eos_token
                 if rank == 0: logger.info(f"Set tokenizer pad_token to its eos_token: '{tokenizer.eos_token}'")
-            else:  # Add a new pad token if no EOS token exists (unlikely for GPT2 but good practice)
+            else:
                 added_tokens = tokenizer.add_special_tokens({'pad_token': '[PAD]'})
                 if rank == 0: logger.warning(
-                    f"Tokenizer had no pad_token or eos_token. Added new [PAD] token (added {added_tokens} new tokens). Model embedding layer will need resizing if this happens after model init.")
-        # Pass the initialized logger instance to create_small_model_config
+                    f"Tokenizer had no pad_token or eos_token. Added new [PAD] token (added {added_tokens} new tokens).")
         config = create_small_model_config(base_model_name=args.model, corpus_size_tag=args.model_size,
                                            tokenizer=tokenizer,
-                                           logger_instance=logger if rank == 0 else logging.getLogger(
-                                               "dummy_logger"))  # Give a dummy logger for non-rank0
-        model = GPT2LMHeadModel(config=config)  # Initialize model with this config
-        # Resize embeddings if new tokens were added to tokenizer *after* config was made (usually config reflects vocab size)
-        # model.resize_token_embeddings(len(tokenizer)) # Good practice if vocab changed.
-
+                                           logger_instance=logger if rank == 0 else logging.getLogger("dummy_logger"))
+        model = GPT2LMHeadModel(config=config)
         if rank == 0: logger.info("Model architecture initialized with random weights.")
         model.to(device);
         if rank == 0: logger.info(f"Initialized model moved to {device}")
-
         if is_distributed:
-            model = DDP(model, device_ids=[local_rank], output_device=local_rank,
-                        find_unused_parameters=False)  # Set find_unused_parameters if needed
+            model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
             if rank == 0: logger.info("Model wrapped with DistributedDataParallel (DDP).")
     except Exception as e:
         logger.critical(f"Model/Tokenizer initialization failed (Rank {rank}): {e}", exc_info=True)
         if NEPTUNE_AVAILABLE and run: run["critical_errors/model_init"] = traceback.format_exc()
         sys.exit(1)
 
-    # === Training Data Loading ===
     train_dataloader, train_sampler = None, None
     try:
         data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -689,10 +655,8 @@ def main():
         if NEPTUNE_AVAILABLE and run: run["critical_errors/data_load"] = traceback.format_exc()
         sys.exit(1)
 
-    # === Optimizer, Scheduler, Scaler Setup ===
     if rank == 0: logger.info(f"Setting up Optimizer, LR Scheduler, Grad Scaler...")
-    no_decay = ["bias", "LayerNorm.weight", "layernorm.weight"]  # Ensure consistent naming
-    # Use model.module.named_parameters() if DDP is used, otherwise model.named_parameters()
+    no_decay = ["bias", "LayerNorm.weight", "layernorm.weight"]
     named_params_iterable = model.module.named_parameters() if is_distributed else model.named_parameters()
     optimizer_grouped_parameters = [
         {"params": [p for n, p in named_params_iterable if
@@ -700,205 +664,154 @@ def main():
          "weight_decay": args.weight_decay},
         {"params": [p for n, p in named_params_iterable if any(nd in n.lower() for nd in no_decay) and p.requires_grad],
          "weight_decay": 0.0}, ]
-
-    # Filter out empty param groups
     optimizer_grouped_parameters = [g for g in optimizer_grouped_parameters if g["params"]]
-
     total_params_count = sum(p.numel() for p in (model.module.parameters() if is_distributed else model.parameters()))
     num_trainable_params = sum(p.numel() for g in optimizer_grouped_parameters for p in g['params'])
     if rank == 0: logger.info(f"Model Parameters: Total={total_params_count:,}, Trainable={num_trainable_params:,}")
     if num_trainable_params == 0:
-        logger.critical("No trainable parameters found. Check model or optimizer group setup.")
+        logger.critical("No trainable parameters found.")
         if NEPTUNE_AVAILABLE and run: run["critical_errors/no_trainable_params"] = "No trainable parameters found."
         sys.exit(1)
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
-
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps) if len(
         train_dataloader) > 0 else 1
     max_train_steps_from_epochs = args.num_train_epochs * num_update_steps_per_epoch
-
     if args.max_steps > 0:
         max_train_steps = args.max_steps
-        if rank == 0: logger.info(
-            f"Training will be limited to {max_train_steps:,} total optimizer steps (due to --max_steps).")
     else:
         max_train_steps = max_train_steps_from_epochs
-        if rank == 0: logger.info(f"Calculated total training optimizer steps based on epochs: {max_train_steps:,}")
-
-    if max_train_steps <= 0 and rank == 0:
-        logger.warning(
-            "Max training steps is zero or negative. Training might not proceed beyond setup if not resuming past this.")
-
+    if rank == 0: logger.info(f"Target total training optimizer steps: {max_train_steps:,}")
     eff_warmup = min(args.num_warmup_steps, max_train_steps) if max_train_steps > 0 else args.num_warmup_steps
     if rank == 0: logger.info(f"Effective warmup steps for LR scheduler: {eff_warmup}")
-
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=eff_warmup,
-        num_training_steps=max_train_steps if max_train_steps > 0 else 1  # Scheduler needs num_training_steps > 0
-    )
+    lr_scheduler = get_scheduler(name=args.lr_scheduler_type, optimizer=optimizer, num_warmup_steps=eff_warmup,
+                                 num_training_steps=max_train_steps if max_train_steps > 0 else 1)
     scaler_enabled = args.use_amp and device.type == 'cuda'
     scaler = torch.amp.GradScaler(enabled=scaler_enabled)
-    if args.use_amp and not scaler_enabled and rank == 0: logger.warning(
-        "AMP training was requested, but CUDA is not available. AMP disabled.")
     if rank == 0: logger.info(f"Automatic Mixed Precision (AMP) enabled: {scaler.is_enabled()}.")
 
-    # === Resume from Checkpoint Logic ===
     start_epoch, global_step, resumed_from_checkpoint = 0, 0, False
     if args.checkpoint_path:
         state_file = Path(args.checkpoint_path) / "training_state.pt"
         if state_file.is_file():
             if rank == 0: logger.info(f"Attempting to load training state from: {state_file}")
             try:
-                # Load checkpoint to CPU first to avoid GPU OOM if checkpoint is large, then move model to device
                 ckpt = torch.load(state_file, map_location='cpu')
                 model_to_load = model.module if hasattr(model, 'module') else model
-
-                # Handle potential mismatch in vocab size if tokenizer changed
                 ckpt_model_vocab_size = ckpt['model'].get('transformer.wte.weight', {}).shape[
                     0] if 'transformer.wte.weight' in ckpt['model'] else None
                 current_model_vocab_size = model_to_load.config.vocab_size
                 if ckpt_model_vocab_size and ckpt_model_vocab_size != current_model_vocab_size:
                     logger.warning(
-                        f"Checkpoint vocab size ({ckpt_model_vocab_size}) differs from current model vocab size ({current_model_vocab_size}). Resizing model embeddings.")
-                    model_to_load.resize_token_embeddings(len(tokenizer))  # Ensure tokenizer is the source of truth
-
+                        f"Checkpoint vocab ({ckpt_model_vocab_size}) vs current model vocab ({current_model_vocab_size}). Resizing.")
+                    model_to_load.resize_token_embeddings(len(tokenizer))
                 missing_keys, unexpected_keys = model_to_load.load_state_dict(ckpt['model'], strict=False)
-                if rank == 0:
-                    logger.info(
-                        f"Model state loaded from checkpoint. Missing keys: {missing_keys or 'None'}. Unexpected keys: {unexpected_keys or 'None'}.")
-
-                # Move model to device *after* loading state dict potentially from CPU
+                if rank == 0: logger.info(
+                    f"Model state loaded. Missing: {missing_keys or 'None'}. Unexpected: {unexpected_keys or 'None'}.")
                 model.to(device)
                 if rank == 0: logger.info(f"Model moved to {device} after loading checkpoint state.")
-
                 if 'optimizer' in ckpt: optimizer.load_state_dict(ckpt['optimizer'])
                 if 'lr_scheduler' in ckpt: lr_scheduler.load_state_dict(ckpt['lr_scheduler'])
                 if 'scaler' in ckpt and ckpt['scaler'] is not None and scaler.is_enabled():
                     scaler.load_state_dict(ckpt['scaler'])
                 elif scaler.is_enabled() and ('scaler' not in ckpt or ckpt['scaler'] is None):
-                    logger.warning(
-                        "Resuming with AMP enabled, but no scaler state found in checkpoint. Scaler starts fresh.")
-
+                    logger.warning("Resuming AMP, but no scaler state in ckpt.")
                 start_epoch = ckpt.get('epoch', 0)
                 global_step = ckpt.get('global_step', 0)
-
                 if max_train_steps > 0 and global_step >= max_train_steps:
-                    # Effectively prevent training loop from running if already completed
-                    start_epoch = args.num_train_epochs  # This will make the for loop range empty
+                    start_epoch = args.num_train_epochs
                     if rank == 0: logger.info(
-                        f"Resuming from step {global_step}, which already meets or exceeds max_steps ({max_train_steps}). Training will not continue further.")
+                        f"Resuming step {global_step} >= max_steps ({max_train_steps}). Training will not continue.")
                 else:
-                    # If not completed, prepare to start the *next* epoch after the one saved
                     start_epoch += 1
                     if rank == 0: logger.info(
-                        f"Resuming training. Will start from Epoch {start_epoch}, Global Step {global_step}")
-
+                        f"Resuming training. Start Epoch {start_epoch}, Global Step {global_step}")
                 resumed_from_checkpoint = True
                 try:
-                    if 'torch_rng_state' in ckpt: torch.set_rng_state(
-                        ckpt['torch_rng_state'])  # Already on CPU from map_location='cpu'
+                    if 'torch_rng_state' in ckpt: torch.set_rng_state(ckpt['torch_rng_state'])
                     if device.type == 'cuda' and 'torch_cuda_rng_state_all' in ckpt and ckpt[
                         'torch_cuda_rng_state_all']:
-                        # Ensure CUDA RNG states are loaded correctly after model is on CUDA device
                         torch.cuda.set_rng_state_all([s.to(device) for s in ckpt['torch_cuda_rng_state_all']])
                     if 'numpy_rng_state' in ckpt: np.random.set_state(ckpt['numpy_rng_state'])
                     if 'python_rng_state' in ckpt: random.setstate(ckpt['python_rng_state'])
                     if rank == 0: logger.info("Restored RNG states from checkpoint.")
                 except Exception as rng_e:
-                    logger.warning(f"Could not fully restore RNG states from checkpoint: {rng_e}")
-
+                    logger.warning(f"Could not fully restore RNG states: {rng_e}")
                 del ckpt;
                 gc.collect();
                 if torch.cuda.is_available(): torch.cuda.empty_cache()
-                if is_distributed: torch.distributed.barrier()  # Sync all processes after loading
+                if is_distributed: torch.distributed.barrier()
             except Exception as e:
                 logger.error(f"Failed to load checkpoint from {state_file}: {e}", exc_info=True)
-                start_epoch, global_step, resumed_from_checkpoint = 0, 0, False  # Reset to start from scratch
+                start_epoch, global_step, resumed_from_checkpoint = 0, 0, False
         else:
-            if rank == 0: logger.warning(
-                f"Checkpoint path {args.checkpoint_path} specified, but training_state.pt not found. Starting training from scratch.")
+            if rank == 0: logger.warning(f"Checkpoint path specified, but {state_file} not found. Starting fresh.")
     else:
         if rank == 0: logger.info("No checkpoint path specified. Starting training from scratch.")
 
-    # ---- ADDED: Save checkpoint at initialization (step 0) if not resuming ----
     if global_step == 0 and not resumed_from_checkpoint:
         if rank == 0:
             logger.info("Saving initial checkpoint at step 0 as training is starting from scratch.")
-            save_checkpoint(args, model, optimizer, lr_scheduler, scaler, start_epoch, 0, rank, tokenizer)
-        if is_distributed:
-            torch.distributed.barrier()  # Ensure all processes wait if rank 0 saved, and sync before training loop
-    # ---- END ADDED ----
+            save_checkpoint(args, model, optimizer, lr_scheduler, scaler, start_epoch, 0, rank,
+                            tokenizer)  # start_epoch is 0 here
 
-    # ---- ADDED: Generate logarithmic save steps ----
+            if args.local_eval:  # Evaluate initial step 0 checkpoint
+                logger.info(f"Performing local evaluation on initial checkpoint-0.")
+                initial_checkpoint_dir = Path(args.output_dir) / "checkpoint-0"
+                if initial_checkpoint_dir.is_dir():  # Should exist if save_checkpoint succeeded
+                    run_local_evaluation(args, initial_checkpoint_dir, 0, rank)
+                else:
+                    logger.error(
+                        f"Initial checkpoint directory {initial_checkpoint_dir} not found for evaluation. This should not happen if save_checkpoint succeeded.")
+        if is_distributed:
+            torch.distributed.barrier()
+
     log_save_steps_set = set()
-    if args.save_steps > 0:  # Only if regular saving is configured, to give context to "first save step"
+    if args.save_steps > 0:
         current_log_step = 1
         while current_log_step < args.save_steps:
             log_save_steps_set.add(current_log_step)
             next_log_step = current_log_step * 2
-            if next_log_step <= current_log_step:  # Handles overflow or current_log_step becoming 0
+            if next_log_step <= current_log_step:
                 if rank == 0: logger.warning(
-                    f"Logarithmic step generation issue: next step {next_log_step} not greater than current {current_log_step}. Stopping log step generation.")
+                    f"Log step gen issue: next {next_log_step} not > current {current_log_step}. Stopping.")
                 break
             current_log_step = next_log_step
-    if rank == 0 and log_save_steps_set:  # Log only if set is not empty
+    if rank == 0:
         logger.info(
-            f"Calculated logarithmic save steps (up to args.save_steps={args.save_steps}): {sorted(list(log_save_steps_set))}")
-    elif rank == 0:
-        logger.info(f"No logarithmic save steps generated (e.g. args.save_steps is too small or 0).")
-    # ---- END ADDED ----
+            f"Logarithmic save steps (up to args.save_steps={args.save_steps}): {sorted(list(log_save_steps_set)) if log_save_steps_set else 'None'}")
 
     if rank == 0:
         logger.info("***** Training Configuration Summary *****")
-        logger.info(f"   Distributed Training: {is_distributed} (World Size: {world_size}, Rank: {rank})")
-        logger.info(f"   Device: {device}")
-        logger.info(f"   AMP Enabled: {scaler.is_enabled()}")
-        logger.info(f"   Seed: {args.seed} (Rank 0 base, others incremented)")
-        logger.info(f"   Output Directory: {args.output_dir}")
         logger.info(
-            f"   Resumed from Checkpoint: {resumed_from_checkpoint} (Start Epoch: {start_epoch}, Global Step: {global_step})")
-        logger.info(f"   Total Epochs: {args.num_train_epochs}")
-        logger.info(f"   Max Optimizer Steps: {max_train_steps if max_train_steps > 0 else 'Determined by epochs'}")
-        logger.info(f"   Effective Warmup Steps: {eff_warmup}")
-        logger.info(f"   Logarithmic Save Steps: {sorted(list(log_save_steps_set)) if log_save_steps_set else 'None'}")
-        logger.info(f"   Local Evaluation by this script: {'ENABLED' if args.local_eval else 'DISABLED'}")
+            f"   Local Evaluation by this script: {'ENABLED (on all saves)' if args.local_eval else 'DISABLED'}")
         if args.local_eval:
-            logger.info(f"      Eval Script: {args.evaluate_script_path}")
-            logger.info(f"      Standard Eval Triggered: {args.trigger_standard_eval} (every {args.eval_steps} steps)")
-            logger.info(
-                f"      Priming Eval Triggered: {args.trigger_priming_eval} (every {args.priming_eval_steps} steps)")
+            logger.info(f"      Standard Eval Enabled on Saves: {args.trigger_standard_eval}")
+            logger.info(f"      Priming Eval Enabled on Saves: {args.trigger_priming_eval}")
+    # ... (rest of summary logging)
 
-    # === Training Loop ===
-    if is_distributed: torch.distributed.barrier()  # Ensure all setup is done before training starts
+    if is_distributed: torch.distributed.barrier()
     training_start_time = time.time()
-    final_global_step = global_step  # Initialize with potentially resumed step count
+    final_global_step = global_step
 
     try:
         for epoch in range(start_epoch, args.num_train_epochs):
             if max_train_steps > 0 and final_global_step >= max_train_steps:
                 if rank == 0: logger.info(
-                    f"Max steps ({max_train_steps}) already reached or exceeded before starting epoch {epoch}. Current step: {final_global_step}. Stopping training.")
+                    f"Max steps ({max_train_steps}) met before epoch {epoch}. Step: {final_global_step}. Stopping.")
                 break
-
             if rank == 0: logger.info(
-                f"--- Starting Epoch {epoch + 1}/{args.num_train_epochs} (Current Global Step: {final_global_step}) ---")
-            model.train()  # Ensure model is in training mode
+                f"--- Starting Epoch {epoch + 1}/{args.num_train_epochs} (Global Step: {final_global_step}) ---")
 
-            # Update final_global_step with the value returned by train_epoch
             final_global_step = train_epoch(
                 args=args, model=model, optimizer=optimizer, lr_scheduler=lr_scheduler, scaler=scaler,
                 train_dataloader=train_dataloader, train_sampler=train_sampler,
                 epoch=epoch, global_step=final_global_step, device=device, rank=rank, world_size=world_size,
-                run=run, tokenizer=tokenizer,
-                max_train_steps=max_train_steps,
-                log_save_steps_set=log_save_steps_set  # MODIFIED: Pass the set
+                run=run, tokenizer=tokenizer, max_train_steps=max_train_steps,
+                log_save_steps_set=log_save_steps_set
             )
-            # Check after epoch if max_steps was met, to break outer loop
             if max_train_steps > 0 and final_global_step >= max_train_steps:
                 if rank == 0: logger.info(
-                    f"Max steps ({max_train_steps}) reached during epoch {epoch + 1}. Final global step: {final_global_step}. Stopping training.")
+                    f"Max steps ({max_train_steps}) reached during epoch {epoch + 1}. Step: {final_global_step}. Stopping.")
                 break
 
         training_duration = time.time() - training_start_time
@@ -907,54 +820,20 @@ def main():
             logger.info(f"Total Training Time: {training_duration:.2f} seconds")
             logger.info(f"Final Global Optimizer Step Reached: {final_global_step}")
 
-        # Final Saving (Rank 0 Only)
-        # Check if any training was done or if it's a fresh start (final_global_step > 0 or (final_global_step==0 and not resumed_from_checkpoint))
-        # The initial checkpoint for step 0 is already saved if not resuming.
-        # We only need to save a "final" checkpoint if we actually trained or if no initial checkpoint was made due to resuming.
-        # The current logic: always save a final checkpoint based on final_global_step.
-        # This is generally fine as it ensures the very last state is captured.
         if rank == 0:
-            # Use the 'final_global_step' for naming the last checkpoint directory
-            # Avoid re-saving step 0 if it was the only step and an initial checkpoint was already made
-            should_save_final = True
-            if final_global_step == 0 and not resumed_from_checkpoint:
-                # Step 0 was already saved at initialization. No need to save again unless user wants explicit "final_model" dir.
-                # The save_checkpoint for "checkpoint-0" is already done.
-                # We will still proceed to save to "final_model" distinct path.
-                logger.info(f"Final global step is 0 and training started fresh; initial checkpoint already saved.")
-                # To prevent redundant full save_checkpoint call for step 0:
-                # However, if we want the final_model artifacts, we proceed.
-                # The current logic saves checkpoint-{final_global_step} and then final_model.
-                # This is acceptable.
-                pass
-
             final_checkpoint_dir = Path(args.output_dir) / f"checkpoint-{final_global_step}"
-            # Only call save_checkpoint if it's not a redundant step 0 save.
-            # Or, simplify: always call it, save_checkpoint is idempotent for directory creation.
-            # The main concern is overwriting or redundant logging.
-            # Let's save if it's not the *exact same* initial checkpoint event.
-            # Condition: if we actually trained (final_global_step > 0) OR if we resumed (so init save didn't happen).
-            if final_global_step > 0 or (final_global_step == 0 and resumed_from_checkpoint):
-                logger.info(
-                    f"Saving final training state at step {final_global_step} using save_checkpoint logic to: {final_checkpoint_dir}")
-                save_checkpoint(args, model, optimizer, lr_scheduler, scaler,
-                                epoch if 'epoch' in locals() else args.num_train_epochs - 1,  # Use last known epoch
-                                final_global_step, rank, tokenizer)
-                logger.info(f"Final training state saved successfully to {final_checkpoint_dir}.")
-            elif final_global_step == 0 and not resumed_from_checkpoint:
-                logger.info(
-                    f"Final step is 0 (fresh start), initial checkpoint at 'checkpoint-0' is already the final state.")
-                # final_checkpoint_dir would be 'checkpoint-0' which was just created.
+            logger.info(f"Saving final training state at step {final_global_step} to: {final_checkpoint_dir}")
+            save_checkpoint(args, model, optimizer, lr_scheduler, scaler,
+                            epoch if 'epoch' in locals() else args.num_train_epochs - 1,
+                            final_global_step, rank, tokenizer)
+            logger.info(f"Final training state saved successfully to {final_checkpoint_dir}.")
 
-            # Always save to a specific 'final_model' directory for clarity
             final_model_distinct_path = Path(args.output_dir) / "final_model"
             final_model_distinct_path.mkdir(parents=True, exist_ok=True)
-            logger.info(
-                f"Saving final model weights, tokenizer, and config to distinct directory: {final_model_distinct_path}")
+            logger.info(f"Saving final model weights, tokenizer, config to: {final_model_distinct_path}")
             model_to_save_final = model.module if hasattr(model, 'module') else model
             model_to_save_final.save_pretrained(final_model_distinct_path)
             tokenizer.save_pretrained(final_model_distinct_path)
-            # Save training args to this final_model directory
             args_dict_final_save = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
             with open(final_model_distinct_path / "training_args.json", "w") as f:
                 json.dump(args_dict_final_save, f, indent=4)
@@ -962,46 +841,37 @@ def main():
 
             if NEPTUNE_AVAILABLE and run:
                 try:
-                    if final_checkpoint_dir.is_dir():  # This dir should exist from save_checkpoint or init save
-                        logger.info(
-                            f"Attempting to upload final checkpoint directory '{final_checkpoint_dir.name}' to Neptune.")
-                        run[f"checkpoints/final_step_{final_global_step}"].upload_files(str(final_checkpoint_dir))
-                    if final_model_distinct_path.is_dir():
-                        logger.info(
-                            f"Attempting to upload final model directory '{final_model_distinct_path.name}' to Neptune.")
-                        run["final_model_artifacts"].upload_files(str(final_model_distinct_path))
-
+                    if final_checkpoint_dir.is_dir(): run[f"checkpoints/final_step_{final_global_step}"].upload_files(
+                        str(final_checkpoint_dir))
+                    if final_model_distinct_path.is_dir(): run["final_model_artifacts"].upload_files(
+                        str(final_model_distinct_path))
                     run["training_summary/duration_seconds"] = training_duration
                     run["training_summary/final_global_step"] = final_global_step
                     logger.info("Logged final training summary and artifacts to Neptune.")
                 except Exception as e:
                     logger.warning(f"Neptune final upload/log failed: {e}", exc_info=True)
 
-            # If local eval was enabled, consider one final evaluation run on the final model
-            if args.local_eval and (args.trigger_standard_eval or args.trigger_priming_eval):
-                logger.info(f"Performing final local evaluation on the model from step {final_global_step}.")
-                # The checkpoint for final_global_step should exist.
-                if final_checkpoint_dir.is_dir():
+            if args.local_eval:  # Evaluate final saved checkpoint
+                logger.info(
+                    f"Performing final local evaluation on the model from step {final_global_step} (directory: {final_checkpoint_dir}).")
+                if final_checkpoint_dir.is_dir():  # Should exist from the save_checkpoint call above
                     run_local_evaluation(args, final_checkpoint_dir, final_global_step, rank)
                 else:
-                    logger.warning(
-                        f"Final checkpoint directory {final_checkpoint_dir} not found for final local evaluation. Skipping.")
-
+                    logger.error(
+                        f"Final checkpoint directory {final_checkpoint_dir} not found for final local evaluation. This should not happen if save_checkpoint succeeded. Skipping.")
 
     except KeyboardInterrupt:
         if rank == 0: logger.warning("Training interrupted by user (KeyboardInterrupt).")
         if NEPTUNE_AVAILABLE and run and rank == 0: run["status/training"] = "interrupted_keyboard"
     except Exception as e:
         logger.critical(f"An unhandled exception occurred during the training loop (Rank {rank}): {e}", exc_info=True)
-        if NEPTUNE_AVAILABLE and run and rank == 0:
-            run["critical_errors/training_loop"] = traceback.format_exc()
+        if NEPTUNE_AVAILABLE and run and rank == 0: run["critical_errors/training_loop"] = traceback.format_exc()
     finally:
-        if is_distributed:
-            torch.distributed.destroy_process_group()
+        if is_distributed: torch.distributed.destroy_process_group()
         if rank == 0 and NEPTUNE_AVAILABLE and run:
             try:
                 logger.info("Stopping Neptune run...")
-                run.sync()  # Ensure all data is sent before stopping
+                run.sync();
                 run.stop()
                 logger.info("Neptune run stopped.")
             except Exception as ne:
@@ -1009,21 +879,15 @@ def main():
         logger.info(f"Training script (train.py) finished on Rank {rank}.")
 
 
-# Define fallback tqdm before __main__ block for safety, though import is tried in main
 def _fallback_tqdm(iterable, *args, **kwargs): return iterable
 
 
 if __name__ == "__main__":
-    # Basic config for logging before DDP setup or if script is run directly without full setup.
-    # This will be overridden by setup_logging once rank is known.
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s:%(lineno)d - %(message)s",
                         datefmt="%Y-%m-%d %H:%M:%S")
-
-    # Attempt to import tqdm globally if needed, or handle its absence.
     try:
         from tqdm.auto import tqdm
     except ImportError:
-        if int(os.environ.get("RANK", "0")) == 0: print(
-            "Warning: tqdm.auto not installed. Progress bars will be disabled.")
-        tqdm = _fallback_tqdm  # Assign fallback
+        if int(os.environ.get("RANK", "0")) == 0: print("Warning: tqdm.auto not installed. Progress bars disabled.")
+        tqdm = _fallback_tqdm
     main()
