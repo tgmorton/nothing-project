@@ -420,7 +420,7 @@ def create_priming_dataloader(
     dataset = PrimingEvaluationDataset(final_processed_data)
     # Note: join_string in partial is item['congruent_prime'] + join_string + item['target_sentence']
     # The join_string here is what separates prime and target.
-    collate_fn_partial = partial(collate_priming_eval_batch, tokenizer=tokenizer, join_string=delimiter + " ",
+    collate_fn_partial = partial(collate_priming_eval_batch, tokenizer=tokenizer, join_string=join_string + " ",
                                  max_length=max_length)
 
     sampler = SequentialSampler(dataset)  # Evaluation should be sequential
