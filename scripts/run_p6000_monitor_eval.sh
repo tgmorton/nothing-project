@@ -82,7 +82,7 @@ echo "Starting Python evaluation_monitor.py script inside Singularity container.
 # --- Define paths relative to container mount points ---
 CONTAINER_MONITOR_SCRIPT_PATH="${CONTAINER_WORKSPACE}/src/evaluation_monitor.py" # Path to evaluation_monitor.py
 CONTAINER_VALID_DATA_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m" # For standard eval
-CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/priming-corpuses_no_null" # For priming eval
+CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/just_shota" # For priming eval
 
 # --- Define Neptune args ---
 NEPTUNE_PROJECT_ARG=""
