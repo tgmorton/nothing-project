@@ -367,6 +367,7 @@ def run_local_evaluation(args, checkpoint_dir: Path, global_step: int, rank: int
         "--output_dir", str(eval_output_dir.resolve()),
         "--seed", str(args.seed),
         "--num_workers", str(args.num_workers),
+        "--eval_max_samples", int(5000)
     ]
     if args.use_amp: eval_args_list.append("--use_amp")
 
