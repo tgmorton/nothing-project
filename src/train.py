@@ -755,14 +755,14 @@ def main():
             save_checkpoint(args, model, optimizer, lr_scheduler, scaler, start_epoch, 0, rank,
                             tokenizer)  # start_epoch is 0 here
 
-            if args.local_eval:  # Evaluate initial step 0 checkpoint
-                logger.info(f"Performing local evaluation on initial checkpoint-0.")
-                initial_checkpoint_dir = Path(args.output_dir) / "checkpoint-0"
-                if initial_checkpoint_dir.is_dir():  # Should exist if save_checkpoint succeeded
-                    run_local_evaluation(args, initial_checkpoint_dir, 0, rank)
-                else:
-                    logger.error(
-                        f"Initial checkpoint directory {initial_checkpoint_dir} not found for evaluation. This should not happen if save_checkpoint succeeded.")
+            # if args.local_eval:  # Evaluate initial step 0 checkpoint
+            #     logger.info(f"Performing local evaluation on initial checkpoint-0.")
+            #     initial_checkpoint_dir = Path(args.output_dir) / "checkpoint-0"
+            #     if initial_checkpoint_dir.is_dir():  # Should exist if save_checkpoint succeeded
+            #         run_local_evaluation(args, initial_checkpoint_dir, 0, rank)
+            #     else:
+            #         logger.error(
+            #             f"Initial checkpoint directory {initial_checkpoint_dir} not found for evaluation. This should not happen if save_checkpoint succeeded.")
         if is_distributed:
             torch.distributed.barrier()
 
