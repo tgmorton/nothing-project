@@ -3,7 +3,7 @@
 import logging
 from collections import defaultdict
 from functools import partial
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from pathlib import Path
 import random
 
