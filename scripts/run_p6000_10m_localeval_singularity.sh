@@ -115,7 +115,7 @@ singularity exec --nv \
         --per_device_train_batch_size 8 \
         --gradient_accumulation_steps 16 \
         \
-        --learning_rate 3e-4 \
+        --learning_rate 10e-4 \
         --lr_scheduler_type "cosine" \
         --num_warmup_steps 100 \
         --weight_decay 0.01 \
