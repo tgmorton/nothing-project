@@ -58,7 +58,7 @@ CONTAINER_OUTPUT_DIR="/.output" # Output base mount inside container
 CONTAINER_PRIMING_DIR="/eval"   # Priming base mount inside container
 
 # --- Define Run Output Directory Name (Modified for clarity) ---
-RUN_OUTPUT_NAME="gpt2_p6000_sif_local_eval_run" # Modified name
+RUN_OUTPUT_NAME="gpt2_p6000_sif_local_eval_run_May14_1" # Modified name
 HOST_RUN_OUTPUT_DIR="${HOST_OUTPUT_BASE_DIR}/${RUN_OUTPUT_NAME}"
 CONTAINER_RUN_OUTPUT_DIR="${CONTAINER_OUTPUT_DIR}/${RUN_OUTPUT_NAME}" # Specific output dir for this run inside container
 
