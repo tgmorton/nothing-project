@@ -137,8 +137,8 @@ singularity exec --nv \
         \
         --local_eval \
         --evaluate_script_path "${CONTAINER_EVAL_SCRIPT_PATH}" \
-        --trigger_standard_eval \
         --trigger_priming_eval \
+        #--trigger_standard_eval \
         # Removed eval-specific args (--per_device_eval_batch_size, --eval_max_samples, --priming_eval_max_samples_per_file)
         # Renamed --run_priming_eval to --trigger_priming_eval
 
