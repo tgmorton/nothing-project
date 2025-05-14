@@ -134,9 +134,9 @@ singularity exec --nv \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_run_name "${NEPTUNE_RUN_NAME}" \
         --neptune_tags ${NEPTUNE_TAGS} \
-        \
-        --local_eval \
-        --evaluate_script_path "${CONTAINER_EVAL_SCRIPT_PATH}" \
+        #\
+        #--local_eval \
+        #--evaluate_script_path "${CONTAINER_EVAL_SCRIPT_PATH}" \
         # --trigger_priming_eval \
         #--trigger_standard_eval \
         # Removed eval-specific args (--per_device_eval_batch_size, --eval_max_samples, --priming_eval_max_samples_per_file)
