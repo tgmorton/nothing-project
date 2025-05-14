@@ -1,18 +1,16 @@
-# src/priming_evaluation/data_loader.py (Revised with Sampling)
+# src/priming_evaluation/data_loader.py (Revised with Sampling and Baseline in Collate)
 
 import logging
 from collections import defaultdict
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
-import random # Import the random module for sampling
+import random
 
 import pandas as pd
 import torch
-# Import numpy if you prefer np.random.choice, otherwise random.sample is fine
-# import numpy as np
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import DataLoader, Dataset, SequentialSampler # Add SequentialSampler import
+from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from transformers import PreTrainedTokenizer, BatchEncoding
 
 logger = logging.getLogger(__name__)
@@ -49,7 +47,7 @@ def get_structure_alternations(columns: List[str]) -> Optional[Tuple[str, str]]:
 # --- load_and_process_priming_data (No changes needed) ---
 def load_and_process_priming_data(
     csv_path: Path,
-    tokenizer: PreTrainedTokenizer, # Keep tokenizer if needed for validation during processing
+    tokenizer: PreTrainedTokenizer,
     delimiter: str = ".",
 ) -> List[Dict[str, Any]]:
     """ Loads priming data, identifies prime/target pairs per row based on column prefixes. """
@@ -77,12 +75,9 @@ def load_and_process_priming_data(
         try:
             prime_x_sent, prime_y_sent = str(row[prime_col_x]), str(row[prime_col_y])
             target_x_sent, target_y_sent = str(row[target_col_x]), str(row[target_col_y])
-            # Basic validation for empty/NaN strings
             if not all(s and isinstance(s, str) and s.strip() and s.lower() != 'nan' for s in [prime_x_sent, prime_y_sent, target_x_sent, target_y_sent]):
-                 # logger.debug(f"Skipping row {index} due to empty/NaN field in {csv_filename}")
                  continue
 
-            # Add both alternation directions
             processed_data.append({"target_sentence": target_x_sent, "congruent_prime": prime_x_sent, "incongruent_prime": prime_y_sent, "target_structure": target_col_x, "congruent_prime_structure": prime_col_x, "incongruent_prime_structure": prime_col_y, "source_csv": csv_filename, "csv_row": index})
             processed_data.append({"target_sentence": target_y_sent, "congruent_prime": prime_y_sent, "incongruent_prime": prime_x_sent, "target_structure": target_col_y, "congruent_prime_structure": prime_col_y, "incongruent_prime_structure": prime_col_x, "source_csv": csv_filename, "csv_row": index})
             items_created_count += 2
@@ -92,106 +87,196 @@ def load_and_process_priming_data(
     return processed_data
 
 
-# --- REVISED collate_priming_eval_batch (No changes needed from provided version) ---
-# (Keep the collate function exactly as you provided it in the previous turn)
+# --- REVISED collate_priming_eval_batch (for Baseline probability) ---
 def collate_priming_eval_batch(
     batch: List[Dict[str, Any]],
     tokenizer: PreTrainedTokenizer,
-    join_string: str = ". ", # String used to join prime and target
+    join_string: str = ". ",
     max_length: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Collates a batch for Priming Effect evaluation. Uses revised index logic.
+    Collates a batch for Priming Effect evaluation, including baseline inputs.
     """
     batch = [item for item in batch if item is not None]
     if not batch: return {}
 
     max_length = max_length or getattr(tokenizer, 'model_max_length', None)
     collated_batch = defaultdict(list)
-    items_to_keep_indices = [] # Track indices of items that pass validation
+    items_to_keep_indices = []
 
     # --- Determine Tokenizer Properties ---
-    dummy_tokens = tokenizer("test", add_special_tokens=True)['input_ids']
-    dummy_tokens_no_special = tokenizer("test", add_special_tokens=False)['input_ids']
-    adds_bos = tokenizer.bos_token_id is not None and len(dummy_tokens) > len(dummy_tokens_no_special) and dummy_tokens[0] == tokenizer.bos_token_id
-    adds_eos = tokenizer.eos_token_id is not None and len(dummy_tokens) > len(dummy_tokens_no_special) and dummy_tokens[-1] == tokenizer.eos_token_id
+    # Tokenize a dummy string to check for BOS/EOS addition
+    # It's important that add_special_tokens=True is used for dummy_tokens
+    # and add_special_tokens=False for dummy_tokens_no_special to correctly infer.
+    dummy_text = "test"
+    # Ensure dummy_tokens uses add_special_tokens=True for accurate BOS/EOS detection.
+    dummy_tokens_obj = tokenizer(dummy_text, add_special_tokens=True)
+    dummy_tokens = dummy_tokens_obj['input_ids']
+    # Ensure dummy_tokens_no_special uses add_special_tokens=False.
+    dummy_tokens_no_special = tokenizer(dummy_text, add_special_tokens=False)['input_ids']
+
+    adds_bos = (
+        tokenizer.bos_token_id is not None and
+        len(dummy_tokens) > 0 and # Ensure dummy_tokens is not empty
+        dummy_tokens[0] == tokenizer.bos_token_id and
+        (len(dummy_tokens_no_special) == 0 or dummy_tokens[0] != dummy_tokens_no_special[0])
+    )
+    adds_eos = (
+        tokenizer.eos_token_id is not None and
+        len(dummy_tokens) > 0 and # Ensure dummy_tokens is not empty
+        dummy_tokens[-1] == tokenizer.eos_token_id and
+        (len(dummy_tokens_no_special) == 0 or dummy_tokens[-1] != dummy_tokens_no_special[-1])
+    )
+    # Correction: if no special tokens are added, but BOS/EOS is part of normal tokenization,
+    # this logic might misinterpret. The key is if `add_special_tokens=True` *results* in BOS/EOS.
+    # A simpler check:
+    test_tokens_with_special = tokenizer.encode("a", add_special_tokens=True)
+    test_tokens_without_special = tokenizer.encode("a", add_special_tokens=False)
+
+    adds_bos = (tokenizer.bos_token_id is not None and
+                len(test_tokens_with_special) > len(test_tokens_without_special) and
+                test_tokens_with_special[0] == tokenizer.bos_token_id)
+    adds_eos = (tokenizer.eos_token_id is not None and
+                len(test_tokens_with_special) > len(test_tokens_without_special) and
+                test_tokens_with_special[-1] == tokenizer.eos_token_id)
+
     bos_offset = 1 if adds_bos else 0
     eos_offset = 1 if adds_eos else 0
+    # logger.debug(f"Tokenizer properties: adds_bos={adds_bos} (offset={bos_offset}), adds_eos={adds_eos} (offset={eos_offset})")
+
 
     # --- Process each item ---
     for idx, item in enumerate(batch):
+        target_sentence = item['target_sentence']
+
+        # Congruent
         prime_congruent_context = item['congruent_prime'] + join_string
-        prime_incongruent_context = item['incongruent_prime'] + join_string
         tokens_prime_congruent_context = tokenizer(prime_congruent_context, add_special_tokens=False, return_attention_mask=False)['input_ids']
-        tokens_prime_incongruent_context = tokenizer(prime_incongruent_context, add_special_tokens=False, return_attention_mask=False)['input_ids']
         len_prime_congruent_context = len(tokens_prime_congruent_context)
-        len_prime_incongruent_context = len(tokens_prime_incongruent_context)
-
-        full_congruent_text = prime_congruent_context + item['target_sentence']
-        full_incongruent_text = prime_incongruent_context + item['target_sentence']
+        full_congruent_text = prime_congruent_context + target_sentence
         congruent_encoding = tokenizer(full_congruent_text, add_special_tokens=True, truncation=True if max_length else False, max_length=max_length, return_attention_mask=True)
-        incongruent_encoding = tokenizer(full_incongruent_text, add_special_tokens=True, truncation=True if max_length else False, max_length=max_length, return_attention_mask=True)
-
         target_start_congruent = bos_offset + len_prime_congruent_context
-        target_start_incongruent = bos_offset + len_prime_incongruent_context
         target_end_congruent = len(congruent_encoding['input_ids']) - eos_offset
+
+        # Incongruent
+        prime_incongruent_context = item['incongruent_prime'] + join_string
+        tokens_prime_incongruent_context = tokenizer(prime_incongruent_context, add_special_tokens=False, return_attention_mask=False)['input_ids']
+        len_prime_incongruent_context = len(tokens_prime_incongruent_context)
+        full_incongruent_text = prime_incongruent_context + target_sentence
+        incongruent_encoding = tokenizer(full_incongruent_text, add_special_tokens=True, truncation=True if max_length else False, max_length=max_length, return_attention_mask=True)
+        target_start_incongruent = bos_offset + len_prime_incongruent_context
         target_end_incongruent = len(incongruent_encoding['input_ids']) - eos_offset
 
+        # Baseline (Target sentence only, with special tokens)
+        baseline_encoding = tokenizer(target_sentence, add_special_tokens=True, truncation=True if max_length else False, max_length=max_length, return_attention_mask=True)
+        target_start_baseline = bos_offset # Target starts after BOS token (if any)
+        target_end_baseline = len(baseline_encoding['input_ids']) - eos_offset # Target ends before EOS token (if any)
+
+
+        # Validate all indices
+        # The end index is exclusive for slicing, so it should be > start index
         valid_congruent = (0 <= target_start_congruent < target_end_congruent <= len(congruent_encoding['input_ids']))
         valid_incongruent = (0 <= target_start_incongruent < target_end_incongruent <= len(incongruent_encoding['input_ids']))
+        valid_baseline = (0 <= target_start_baseline < target_end_baseline <= len(baseline_encoding['input_ids']))
 
-        if valid_congruent and valid_incongruent:
+        # Ensure target length is positive for all
+        # (target_end > target_start already implies length > 0 if they are token indices)
+
+        if valid_congruent and valid_incongruent and valid_baseline:
             items_to_keep_indices.append(idx)
             collated_batch["_congruent_encoding"].append(congruent_encoding)
             collated_batch["_incongruent_encoding"].append(incongruent_encoding)
+            collated_batch["_baseline_encoding"].append(baseline_encoding) # Add baseline encoding
+
             collated_batch["target_start_congruent"].append(target_start_congruent)
             collated_batch["target_end_congruent"].append(target_end_congruent)
             collated_batch["target_start_incongruent"].append(target_start_incongruent)
             collated_batch["target_end_incongruent"].append(target_end_incongruent)
+            collated_batch["target_start_baseline"].append(target_start_baseline) # Add baseline start
+            collated_batch["target_end_baseline"].append(target_end_baseline)   # Add baseline end
+
             collated_batch["target_structure"].append(item['target_structure'])
             collated_batch["source_csv"].append(item['source_csv'])
             collated_batch["csv_row"].append(item['csv_row'])
         else:
-             logger.warning(f"Invalid target indices calculated for row {item.get('csv_row', 'N/A')} from {item.get('source_csv', 'N/A')}. Skipping item.")
+             logger.warning(
+                 f"Invalid target indices for row {item.get('csv_row', 'N/A')} from {item.get('source_csv', 'N/A')}. "
+                 f"Con: valid={valid_congruent}, s={target_start_congruent}, e={target_end_congruent}, len={len(congruent_encoding['input_ids'])}. "
+                 f"Incon: valid={valid_incongruent}, s={target_start_incongruent}, e={target_end_incongruent}, len={len(incongruent_encoding['input_ids'])}. "
+                 f"Base: valid={valid_baseline}, s={target_start_baseline}, e={target_end_baseline}, len={len(baseline_encoding['input_ids'])}. "
+                 "Skipping item."
+            )
 
-    if not items_to_keep_indices:
+
+    if not items_to_keep_indices: # or not collated_batch["_congruent_encoding"]:
         logger.warning("Collate function resulted in an empty batch after index validation.")
         return {}
 
     # --- Padding ---
-    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0 # Default to 0 if not set
     collated_batch['congruent_input_ids'] = pad_batch_encodings(collated_batch["_congruent_encoding"], pad_token_id, key='input_ids')
     collated_batch['congruent_attention_mask'] = pad_batch_encodings(collated_batch["_congruent_encoding"], 0, key='attention_mask')
     collated_batch['incongruent_input_ids'] = pad_batch_encodings(collated_batch["_incongruent_encoding"], pad_token_id, key='input_ids')
     collated_batch['incongruent_attention_mask'] = pad_batch_encodings(collated_batch["_incongruent_encoding"], 0, key='attention_mask')
+    collated_batch['baseline_input_ids'] = pad_batch_encodings(collated_batch["_baseline_encoding"], pad_token_id, key='input_ids') # Pad baseline
+    collated_batch['baseline_attention_mask'] = pad_batch_encodings(collated_batch["_baseline_encoding"], 0, key='attention_mask') # Pad baseline
+
 
     # --- Create Labels Tensor ---
-    max_len_batch = max(collated_batch['congruent_input_ids'].shape[1], collated_batch['incongruent_input_ids'].shape[1])
+    # The labels tensor represents the target tokens. It should be consistent.
+    # We derive it from one of the encodings (e.g., congruent) and its target indices.
+    # The evaluator will use the respective target_start_* and target_end_* for each condition
+    # to slice the logits and compare against the relevant part of this common labels tensor.
+
+    # Determine max length for labels based on actual tokenized lengths before padding
+    # This is tricky because labels should ideally match the target segment from *any* of the inputs.
+    # Let's assume the target sequence tokens are the same, and use congruent for label construction.
+    # The evaluator expects labels[i, start_X : end_X] to be the target tokens.
+    # The `start_X` and `end_X` indices are already adjusted for BOS/EOS within each input's tokenization.
+
     labels_list = []
-    for i in range(len(items_to_keep_indices)):
-         input_ids = collated_batch["_congruent_encoding"][i]['input_ids']
-         start_idx = collated_batch["target_start_congruent"][i]
-         end_idx = collated_batch["target_end_congruent"][i]
-         label = torch.full((len(input_ids),), -100, dtype=torch.long)
-         # Ensure indices are valid before assignment
-         if 0 <= start_idx < end_idx <= len(label):
-             label[start_idx:end_idx] = torch.tensor(input_ids[start_idx:end_idx], dtype=torch.long)
+    for i in range(len(collated_batch["_congruent_encoding"])): # Iterate over kept items
+         # Use congruent_input_ids (unpadded, from _congruent_encoding) to extract target tokens for labels
+         # These are the actual token IDs of the target sentence as it appeared in the congruent context
+         input_ids_for_label_extraction = collated_batch["_congruent_encoding"][i]['input_ids']
+         start_idx_for_label = collated_batch["target_start_congruent"][i]
+         end_idx_for_label = collated_batch["target_end_congruent"][i]
+
+         # Create a full label tensor for this item, initially all -100
+         # The length of this label tensor should correspond to the *padded* length of the input_ids
+         # for the congruent condition (or any, if they are padded to the same max_len_batch).
+         # The evaluator slices logits using start-1:end-1 and labels using start:end.
+         # So, labels need to be structured such that labels[start:end] are the target tokens.
+
+         # Use the *unpadded* length for label creation before padding the list of labels.
+         current_item_label = torch.full((len(input_ids_for_label_extraction),), -100, dtype=torch.long)
+
+         if 0 <= start_idx_for_label < end_idx_for_label <= len(input_ids_for_label_extraction):
+             target_tokens = torch.tensor(input_ids_for_label_extraction[start_idx_for_label:end_idx_for_label], dtype=torch.long)
+             current_item_label[start_idx_for_label:end_idx_for_label] = target_tokens
          else:
-             # This case should ideally not happen if validation above worked, but as a safeguard:
-             logger.error(f"Label index mismatch AFTER validation. Item {i}, "
-                          f"Start={start_idx}, End={end_idx}, LabelLen={len(label)}. Setting empty label.")
-             # Keep label as all -100
-         labels_list.append(label)
+             logger.error(f"Label index mismatch for item {i} (using congruent source for labels). "
+                          f"Start={start_idx_for_label}, End={end_idx_for_label}, InputLen={len(input_ids_for_label_extraction)}. Setting empty label.")
+             # current_item_label remains all -100
+         labels_list.append(current_item_label)
 
     collated_batch['labels'] = pad_sequence(labels_list, batch_first=True, padding_value=-100)
 
+
     # Convert index lists to tensors
-    for key in ["target_start_congruent", "target_end_congruent", "target_start_incongruent", "target_end_incongruent"]:
-        if key in collated_batch:
+    index_keys = [
+        "target_start_congruent", "target_end_congruent",
+        "target_start_incongruent", "target_end_incongruent",
+        "target_start_baseline", "target_end_baseline"
+    ]
+    for key in index_keys:
+        if key in collated_batch: # Check if key exists (it should if items were kept)
              collated_batch[key] = torch.tensor(collated_batch[key], dtype=torch.long)
 
+    # Clean up temporary encoding lists
     del collated_batch["_congruent_encoding"]
     del collated_batch["_incongruent_encoding"]
+    del collated_batch["_baseline_encoding"]
 
     return dict(collated_batch)
 
@@ -202,7 +287,7 @@ def pad_batch_encodings(encodings: List[BatchEncoding], pad_value: int, key: str
     sequences = [torch.tensor(enc[key]) for enc in encodings]; return pad_sequence(sequences, batch_first=True, padding_value=pad_value)
 
 
-# --- REVISED create_priming_dataloader (with Sampling) ---
+# --- create_priming_dataloader (No changes needed from your provided version) ---
 def create_priming_dataloader(
     csv_path: str,
     tokenizer: PreTrainedTokenizer,
@@ -210,11 +295,9 @@ def create_priming_dataloader(
     delimiter: str = ".",
     num_workers: int = 0,
     max_length: Optional[int] = None,
-    # --- ADD SAMPLING PARAMETERS ---
-    max_samples: int = -1, # Max samples per file, <=0 means no limit
-    seed: int = 42,        # Seed for reproducible sampling
-    # --- END SAMPLING PARAMETERS ---
-    **kwargs # Keep kwargs for DataLoader flexibility
+    max_samples: int = -1,
+    seed: int = 42,
+    **kwargs
 ) -> Optional[DataLoader]:
     """
     Creates DataLoader for Priming Effect evaluation, with optional sampling.
@@ -223,11 +306,10 @@ def create_priming_dataloader(
     logger.info(f"Creating priming dataloader for: {csv_path_obj.name}")
     logger.info(f"Params: batch_size={batch_size}, max_samples={max_samples}, seed={seed}")
 
-    # 1. Load and process ALL data from the CSV first
-    # Pass tokenizer only if load_and_process needs it for validation (seems it doesn't currently)
+    # Pass tokenizer as it might be used by load_and_process_priming_data,
+    # though in this version it's not strictly necessary for its direct operations.
     processed_data = load_and_process_priming_data(csv_path=csv_path_obj, tokenizer=tokenizer, delimiter=delimiter)
 
-    # Check if processing yielded any data
     if not processed_data:
         logger.warning(f"No data processed from {csv_path_obj.name}. Returning None for DataLoader.")
         return None
@@ -235,49 +317,36 @@ def create_priming_dataloader(
     original_size = len(processed_data)
     logger.info(f"Initially processed {original_size:,} items from {csv_path_obj.name}.")
 
-    # --- START SAMPLING LOGIC (Applied AFTER processing) ---
-    final_processed_data = processed_data # Start with the full list
-
+    final_processed_data = processed_data
     if max_samples > 0 and max_samples < original_size:
         logger.info(f"Sampling {max_samples:,} items from the processed data (seed: {seed}).")
-        # Use random.sample for efficient sampling from the list
-        random.seed(seed) # Seed the random module
+        random.seed(seed)
         try:
             final_processed_data = random.sample(processed_data, k=max_samples)
             logger.info(f"Using subset: {len(final_processed_data):,} items.")
         except ValueError as e:
             logger.error(f"Error during sampling (k={max_samples}, n={original_size}): {e}. Using full set.")
-            final_processed_data = processed_data # Fallback to full data on error
+            # final_processed_data remains processed_data
     elif max_samples > 0:
          logger.info(f"Max_samples ({max_samples:,}) >= processed items ({original_size:,}). Using all processed items.")
-         # final_processed_data is already set to processed_data
     else:
          logger.info(f"Max_samples <= 0. Using all {original_size:,} processed items.")
-         # final_processed_data is already set to processed_data
-    # --- END SAMPLING LOGIC ---
 
-    # Check again if we have data after potential sampling
     if not final_processed_data:
          logger.warning(f"Data list is empty after sampling for {csv_path_obj.name}. Returning None.")
          return None
 
-    # 2. Create Dataset from the (potentially sampled) processed data
     dataset = PrimingEvaluationDataset(final_processed_data)
-
-    # 3. Prepare collate function
     collate_fn_partial = partial(collate_priming_eval_batch, tokenizer=tokenizer, join_string=delimiter + " ", max_length=max_length)
-
-    # 4. Create DataLoader
-    # Use SequentialSampler for evaluation to ensure order is consistent
     sampler = SequentialSampler(dataset)
     dataloader = DataLoader(
         dataset,
-        sampler=sampler, # Use SequentialSampler
+        sampler=sampler,
         batch_size=batch_size,
         collate_fn=collate_fn_partial,
         num_workers=num_workers,
-        shuffle=False, # Shuffle should be False for evaluation sampler
-        **kwargs # Pass any remaining DataLoader kwargs
+        shuffle=False,
+        **kwargs
     )
 
     logger.info(f"Priming Effect DataLoader created for {csv_path_obj.name} with {len(dataset)} items.")
