@@ -126,10 +126,10 @@ singularity exec --nv \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
         --seed 42 \
         \
-        --logging_steps 5 \
-        --eval_steps 25 \
-        --save_steps 25 \
-        --priming_eval_steps 25 \
+        --logging_steps 1 \
+        --eval_steps 3 \
+        --save_steps 3 \
+        --priming_eval_steps 3 \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_run_name "${NEPTUNE_RUN_NAME}" \
@@ -137,7 +137,7 @@ singularity exec --nv \
         \
         --local_eval \
         --evaluate_script_path "${CONTAINER_EVAL_SCRIPT_PATH}" \
-        --trigger_priming_eval \
+        # --trigger_priming_eval \
         #--trigger_standard_eval \
         # Removed eval-specific args (--per_device_eval_batch_size, --eval_max_samples, --priming_eval_max_samples_per_file)
         # Renamed --run_priming_eval to --trigger_priming_eval
