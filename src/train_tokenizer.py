@@ -42,6 +42,7 @@ MIN_FREQUENCY = args.min_frequency
 SPECIAL_TOKENS = [
     "<|endoftext|>",
     "<|padding|>",
+    "[0]"
     # Add any other custom special tokens here if needed, e.g., "[0]"
 ]
 

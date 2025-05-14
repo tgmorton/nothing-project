@@ -112,8 +112,8 @@ singularity exec --nv \
         --output_dir "${CONTAINER_RUN_OUTPUT_DIR}" \
         \
         --num_train_epochs 2 \
-        --per_device_train_batch_size 16 \
-        --gradient_accumulation_steps 8 \
+        --per_device_train_batch_size 8 \
+        --gradient_accumulation_steps 16 \
         \
         --learning_rate 3e-4 \
         --lr_scheduler_type "cosine" \
