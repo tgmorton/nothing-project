@@ -51,9 +51,9 @@ HOST_PROJECT_DIR="/home/AD/thmorton/nothing-project"
 HOST_SIF_PATH="/home/AD/thmorton/nothing-project/python39_llm_env.sif" # Ensure evaluation_monitor.py is in here
 HOST_DATA_BASE_DIR="${HOST_PROJECT_DIR}/data"
 # This is now the PARENT directory where previously trained model checkpoints reside
-HOST_TRAINED_MODEL_PARENT_DIR="${HOST_PROJECT_DIR}/models/May20_seedsweep_ogLR_modelsgpt2_p6000_sif_local_eval_run_May20_sweep_seed${CURRENT_SEED}" # <--- POINT THIS TO YOUR ACTUAL TRAINED MODEL OUTPUT DIR
+HOST_TRAINED_MODEL_PARENT_DIR="${HOST_PROJECT_DIR}/models/May20_seedsweep_ogLR_models/gpt2_p6000_sif_local_eval_run_May20_sweep_seed${CURRENT_SEED}" # <--- POINT THIS TO YOUR ACTUAL TRAINED MODEL OUTPUT DIR
 # This will be the base output directory for the evaluation monitor itself and its orchestrated evaluations
-HOST_EVAL_MONITOR_OUTPUT_BASE_DIR="${HOST_PROJECT_DIR}/models/May20_seedsweep_ogLR_modelsgpt2_p6000_sif_local_eval_run_May20_sweep_seed${CURRENT_SEED}/eval"
+HOST_EVAL_MONITOR_OUTPUT_BASE_DIR="${HOST_PROJECT_DIR}/models/May20_seedsweep_ogLR_models/gpt2_p6000_sif_local_eval_run_May20_sweep_seed${CURRENT_SEED}/eval"
 
 HOST_PRIMING_BASE_DIR="${HOST_PROJECT_DIR}/eval"
 
