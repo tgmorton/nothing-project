@@ -272,7 +272,12 @@ def run_priming_evaluation_on_directory(
         # 'w' mode creates a new CSV for this specific checkpoint's evaluation run
         csv_file_handle = open(raw_priming_csv_path, 'w', newline='', encoding='utf-8')
         csv_writer_obj = csv.writer(csv_file_handle)
-        csv_header = ["eval_step", "corpus_file", "target_structure", "item_index", "pe", "logp_con", "logp_incon"]
+        # MODIFIED CSV HEADER
+        csv_header = [
+            "eval_step", "corpus_file", "target_structure", "item_index",
+            "pe", "logp_con", "logp_incon", "logp_baseline",
+            "logp_con_random_baseline", "logp_incon_random_baseline"
+        ]
         csv_writer_obj.writerow(csv_header)
     except IOError as e:
         logger.error(f"Failed to open or write header to raw priming CSV {raw_priming_csv_path}: {e}")
@@ -292,7 +297,7 @@ def run_priming_evaluation_on_directory(
                 batch_size=eval_args.priming_per_device_eval_batch_size,
                 delimiter=eval_args.priming_delimiter, num_workers=eval_args.num_workers,
                 pin_memory=True, max_samples=eval_args.priming_eval_max_samples_per_file,
-                seed=eval_args.seed
+                seed=eval_args.seed  # Seed for dataloader shuffling/sampling if applicable
             )
         except Exception as e:
             logger.error(f"Dataloader creation failed for priming corpus {corpus_filename}: {e}", exc_info=True)
@@ -306,9 +311,11 @@ def run_priming_evaluation_on_directory(
 
         try:
             # Run the native priming evaluation
+            # MODIFIED: Pass random_seed
             corpus_summary_metrics, corpus_raw_item_results = run_native_priming_eval(
                 model=model, priming_dataloader=current_corpus_dataloader, device=device,
-                tokenizer=tokenizer, use_amp=eval_args.use_amp
+                tokenizer=tokenizer, use_amp=eval_args.use_amp,
+                random_seed=eval_args.seed  # Pass the main evaluation seed here
             )
             all_corpus_summary_metrics[corpus_filename] = corpus_summary_metrics
             logger.info(f"Priming Summary Metrics for {corpus_filename}: {corpus_summary_metrics}")
@@ -334,11 +341,20 @@ def run_priming_evaluation_on_directory(
                                 pe_val = item_data_dict.get('pe', float('nan'))
                                 logp_con_val = item_data_dict.get('logp_con', float('nan'))
                                 logp_incon_val = item_data_dict.get('logp_incon', float('nan'))
+                                # MODIFIED: Get new baseline values
+                                logp_baseline_val = item_data_dict.get('logp_baseline', float('nan'))
+                                logp_con_rb_val = item_data_dict.get('logp_con_random_baseline', float('nan'))
+                                logp_incon_rb_val = item_data_dict.get('logp_incon_random_baseline', float('nan'))
+
+                                # MODIFIED: Write new values to CSV
                                 csv_writer_obj.writerow([
                                     checkpoint_numeric_step, corpus_filename, target_structure_key, item_idx,
                                     f"{pe_val:.6f}" if not math.isnan(pe_val) else 'NaN',
                                     f"{logp_con_val:.6f}" if not math.isnan(logp_con_val) else 'NaN',
-                                    f"{logp_incon_val:.6f}" if not math.isnan(logp_incon_val) else 'NaN'
+                                    f"{logp_incon_val:.6f}" if not math.isnan(logp_incon_val) else 'NaN',
+                                    f"{logp_baseline_val:.6f}" if not math.isnan(logp_baseline_val) else 'NaN',
+                                    f"{logp_con_rb_val:.6f}" if not math.isnan(logp_con_rb_val) else 'NaN',
+                                    f"{logp_incon_rb_val:.6f}" if not math.isnan(logp_incon_rb_val) else 'NaN'
                                 ])
                                 raw_items_written_for_corpus += 1
                             else:
@@ -379,7 +395,8 @@ def run_priming_evaluation_on_directory(
     # Close the main CSV file for raw results
     if csv_file_handle:
         try:
-            csv_file_handle.close(); logger.info(f"Closed raw priming results CSV file: {raw_priming_csv_path}")
+            csv_file_handle.close();
+            logger.info(f"Closed raw priming results CSV file: {raw_priming_csv_path}")
         except Exception as e_close:
             logger.error(f"Error closing raw priming results CSV file {raw_priming_csv_path}: {e_close}")
 
@@ -421,7 +438,7 @@ def parse_eval_args():
                         help="Enable Automatic Mixed Precision (AMP) for evaluation (if model trained with it).")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of DataLoader workers.")
     parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for reproducibility (e.g., dataset sampling).")
+                        help="Random seed for reproducibility (e.g., dataset sampling, priming randomization).")  # Updated help text
     parser.add_argument("--neptune_project", type=str, default=None,
                         help="Neptune project name (e.g., 'your-workspace/your-project').")
     parser.add_argument("--neptune_run_id", type=str, default=None,
@@ -509,7 +526,7 @@ def main():
     logger.info(f"Full Evaluation Arguments: {vars(eval_args)}")
 
     device = get_device()  # Get device after logging is setup
-    set_seed(eval_args.seed)
+    set_seed(eval_args.seed)  # Set seed for all random operations, including priming if used
 
     # --- Neptune Setup ---
     neptune_run_obj = None  # Initialize Neptune run object
