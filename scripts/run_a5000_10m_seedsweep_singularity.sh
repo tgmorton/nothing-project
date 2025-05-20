@@ -7,7 +7,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:1
 #SBATCH --time=7-0:00:00
 #SBATCH --output=../logs/%x_%j_seed%a.out # Modified output for array jobs
 #SBATCH --error=../logs/%x_%j_seed%a.err  # Modified error for array jobs
