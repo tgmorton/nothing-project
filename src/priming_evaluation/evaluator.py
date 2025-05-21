@@ -1,5 +1,3 @@
-# src/priming_evaluation/evaluator.py
-
 import logging
 import math
 import random
@@ -15,12 +13,8 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 
 logger = logging.getLogger(__name__)
 
-# Define the structure for individual item results
-ResultItem = Dict[
-    str, float]  # {'pe': float, 'logp_con': float, 'logp_incon': float, 'logp_baseline': float, 'logp_con_random_baseline': float, 'logp_incon_random_baseline': float}
-# Define the return type for the batch calculation function
+ResultItem = Dict[str, float]
 BatchResults = Dict[str, List[ResultItem]]
-# Define the return type for the main eval function
 EvalResults = Tuple[Dict[str, float], Dict[str, List[ResultItem]]]
 
 
@@ -28,102 +22,78 @@ def calculate_priming_effect(
         model: PreTrainedModel,
         batch: Dict[str, Any],
         device: torch.device,
-        torch_rng: torch.Generator,  # For reproducible shuffling of con/incon primes
-        use_amp: bool = False
+        torch_rng: torch.Generator,
+        tokenizer: PreTrainedTokenizer,  # Added for logging
+        use_amp: bool = False,
+        is_first_batch_for_corpus: bool = False,  # For targeted verbose logging
+        max_verbose_items_per_batch: int = 2  # For targeted verbose logging
 ) -> BatchResults:
-    """
-    Calculates Priming Effect (PE), congruent, incongruent, original baseline,
-    and randomized-prime baseline log probabilities.
-    PE = log P(Target | CongruentPrime) - log P(Target | IncongruentPrime)
-    logp_baseline = log P(Target | UserDefinedBaselinePrime)
-    logp_con_random_baseline = log P(Target | RandomizedCongruentPrime)
-    logp_incon_random_baseline = log P(Target | RandomizedIncongruentPrime)
-    """
     try:
         congruent_input_ids = batch['congruent_input_ids'].to(device)
         congruent_attention_mask = batch['congruent_attention_mask'].to(device)
         incongruent_input_ids = batch['incongruent_input_ids'].to(device)
         incongruent_attention_mask = batch['incongruent_attention_mask'].to(device)
-
-        # Original baseline inputs
         baseline_input_ids = batch['baseline_input_ids'].to(device)
         baseline_attention_mask = batch['baseline_attention_mask'].to(device)
+        labels = batch['labels'].to(device)  # This label tensor is based on congruent path
 
-        labels = batch['labels'].to(device)
-
-        target_starts_con = batch['target_start_congruent']
-        target_ends_con = batch['target_end_congruent']
-        target_starts_incon = batch['target_start_incongruent']
-        target_ends_incon = batch['target_end_incongruent']
-        target_starts_base = batch['target_start_baseline']  # Original baseline
-        target_ends_base = batch['target_end_baseline']  # Original baseline
+        target_starts_con = batch['target_start_congruent'].to(device)  # Ensure on device
+        target_ends_con = batch['target_end_congruent'].to(device)
+        target_starts_incon = batch['target_start_incongruent'].to(device)
+        target_ends_incon = batch['target_end_incongruent'].to(device)
+        target_starts_base = batch['target_start_baseline'].to(device)
+        target_ends_base = batch['target_end_baseline'].to(device)
         target_structures = batch['target_structure']
 
-        # Convert indices to tensors on device if they aren't already
-        if isinstance(target_starts_con, list): target_starts_con = torch.tensor(target_starts_con, dtype=torch.long,
-                                                                                 device=device)
-        if isinstance(target_ends_con, list): target_ends_con = torch.tensor(target_ends_con, dtype=torch.long,
-                                                                             device=device)
-        if isinstance(target_starts_incon, list): target_starts_incon = torch.tensor(target_starts_incon,
-                                                                                     dtype=torch.long, device=device)
-        if isinstance(target_ends_incon, list): target_ends_incon = torch.tensor(target_ends_incon, dtype=torch.long,
-                                                                                 device=device)
-        if isinstance(target_starts_base, list): target_starts_base = torch.tensor(target_starts_base, dtype=torch.long,
-                                                                                   device=device)
-        if isinstance(target_ends_base, list): target_ends_base = torch.tensor(target_ends_base, dtype=torch.long,
-                                                                               device=device)
+        # These might not always be present if collate_fn changes or for older data
+        source_csvs = batch.get('source_csv', ["N/A"] * congruent_input_ids.size(0))
+        csv_rows = batch.get('csv_row', [-1] * congruent_input_ids.size(0))
 
     except KeyError as e:
         logger.error(f"Batch missing key: {e}. Cannot calculate all metrics.")
         return {}
     except Exception as e:
-        logger.error(f"Error moving/preparing batch for device {device}: {e}")
+        logger.error(f"Error moving/preparing batch for device {device}: {e}", exc_info=True)
         return {}
 
     batch_size = congruent_input_ids.size(0)
     batch_results: BatchResults = defaultdict(list)
     nan_result: ResultItem = {
-        'pe': float('nan'),
-        'logp_con': float('nan'),
-        'logp_incon': float('nan'),
-        'logp_baseline': float('nan'),  # Original baseline
-        'logp_con_random_baseline': float('nan'),
+        'pe': float('nan'), 'logp_con': float('nan'), 'logp_incon': float('nan'),
+        'logp_baseline': float('nan'), 'logp_con_random_baseline': float('nan'),
         'logp_incon_random_baseline': float('nan')
     }
 
-    # Prepare inputs for randomized baselines (derived from con/incon)
     con_random_baseline_input_ids = torch.empty_like(congruent_input_ids)
     incon_random_baseline_input_ids = torch.empty_like(incongruent_input_ids)
 
     for i in range(batch_size):
-        # Congruent Random Baseline
-        prime_len_con = target_starts_con[i].item() - 1
-        if prime_len_con < 0:
-            con_random_baseline_input_ids[i] = congruent_input_ids[i]
-        elif prime_len_con == 0:
+        prime_len_con = target_starts_con[i].item() - 1  # BOS is at index 0, prime starts at 1
+        if prime_len_con <= 0:  # No prime tokens (only BOS) or invalid
             con_random_baseline_input_ids[i] = congruent_input_ids[i]
         else:
-            prime_tokens_con = congruent_input_ids[i, :prime_len_con]
-            target_and_suffix_con = congruent_input_ids[i, prime_len_con:]
+            bos_token_id_tensor = congruent_input_ids[i, 0:1]  # Keep BOS
+            prime_tokens_con = congruent_input_ids[i, 1:prime_len_con + 1]  # Prime tokens after BOS
+            target_and_suffix_con = congruent_input_ids[i, prime_len_con + 1:]
             perm_con = torch.randperm(prime_tokens_con.size(0), generator=torch_rng, device=device)
             shuffled_prime_con = prime_tokens_con[perm_con]
-            con_random_baseline_input_ids[i] = torch.cat((shuffled_prime_con, target_and_suffix_con))
+            con_random_baseline_input_ids[i] = torch.cat(
+                (bos_token_id_tensor, shuffled_prime_con, target_and_suffix_con))
 
-        # Incongruent Random Baseline
         prime_len_incon = target_starts_incon[i].item() - 1
-        if prime_len_incon < 0:
-            incon_random_baseline_input_ids[i] = incongruent_input_ids[i]
-        elif prime_len_incon == 0:
+        if prime_len_incon <= 0:
             incon_random_baseline_input_ids[i] = incongruent_input_ids[i]
         else:
-            prime_tokens_incon = incongruent_input_ids[i, :prime_len_incon]
-            target_and_suffix_incon = incongruent_input_ids[i, prime_len_incon:]
+            bos_token_id_tensor_incon = incongruent_input_ids[i, 0:1]
+            prime_tokens_incon = incongruent_input_ids[i, 1:prime_len_incon + 1]
+            target_and_suffix_incon = incongruent_input_ids[i, prime_len_incon + 1:]
             perm_incon = torch.randperm(prime_tokens_incon.size(0), generator=torch_rng, device=device)
             shuffled_prime_incon = prime_tokens_incon[perm_incon]
-            incon_random_baseline_input_ids[i] = torch.cat((shuffled_prime_incon, target_and_suffix_incon))
+            incon_random_baseline_input_ids[i] = torch.cat(
+                (bos_token_id_tensor_incon, shuffled_prime_incon, target_and_suffix_incon))
 
-    con_random_baseline_attention_mask = congruent_attention_mask  # Reuses original mask
-    incon_random_baseline_attention_mask = incongruent_attention_mask  # Reuses original mask
+    con_random_baseline_attention_mask = congruent_attention_mask
+    incon_random_baseline_attention_mask = incongruent_attention_mask
 
     try:
         amp_enabled = use_amp and device.type == 'cuda'
@@ -133,172 +103,147 @@ def calculate_priming_effect(
                 logits_con = outputs_con.logits
                 outputs_incon = model(input_ids=incongruent_input_ids, attention_mask=incongruent_attention_mask)
                 logits_incon = outputs_incon.logits
-                outputs_base = model(input_ids=baseline_input_ids,
-                                     attention_mask=baseline_attention_mask)  # Original baseline
+                outputs_base = model(input_ids=baseline_input_ids, attention_mask=baseline_attention_mask)
                 logits_base = outputs_base.logits
-
                 outputs_con_rand = model(input_ids=con_random_baseline_input_ids,
                                          attention_mask=con_random_baseline_attention_mask)
                 logits_con_rand = outputs_con_rand.logits
                 outputs_incon_rand = model(input_ids=incon_random_baseline_input_ids,
                                            attention_mask=incon_random_baseline_attention_mask)
                 logits_incon_rand = outputs_incon_rand.logits
-
     except Exception as e:
         logger.error(f"Model forward pass error (AMP enabled: {amp_enabled}): {e}", exc_info=True)
-        for i in range(batch_size):
-            target_structure = target_structures[i] if i < len(target_structures) else "unknown_structure_fwd_fail"
-            batch_results[target_structure].append(nan_result)
+        for i_err in range(batch_size):
+            err_target_structure = target_structures[i_err] if i_err < len(
+                target_structures) else "unknown_structure_fwd_fail"
+            batch_results[err_target_structure].append(nan_result)
         return dict(batch_results)
 
     for i in range(batch_size):
         target_structure = target_structures[i]
-        log_prob_con_val = float('nan')
-        log_prob_incon_val = float('nan')
-        log_prob_baseline_val = float('nan')  # Original baseline
-        log_prob_con_rand_val = float('nan')
-        log_prob_incon_rand_val = float('nan')
+        source_csv_item = source_csvs[i] if i < len(source_csvs) else "N/A"
+        csv_row_item = csv_rows[i] if i < len(csv_rows) else -1
+
+        do_verbose_logging = logger.isEnabledFor(
+            logging.DEBUG) and is_first_batch_for_corpus and i < max_verbose_items_per_batch
+
+        if do_verbose_logging:
+            logger.debug(
+                f"\n--- evaluator.py ITEM LOG (BatchIdxItem:{i}, CSV:{source_csv_item}, Row:{csv_row_item}, Struct:{target_structure}) ---")
+
+        log_prob_con_val, log_prob_incon_val, log_prob_baseline_val = float('nan'), float('nan'), float('nan')
+        log_prob_con_rand_val, log_prob_incon_rand_val = float('nan'), float('nan')
         priming_effect = float('nan')
 
         try:
-            start_con = target_starts_con[i].item()
-            end_con = target_ends_con[i].item()
-            start_incon = target_starts_incon[i].item()
-            end_incon = target_ends_incon[i].item()
-            start_base = target_starts_base[i].item()  # Original baseline
-            end_base = target_ends_base[i].item()  # Original baseline
+            s_con, e_con = target_starts_con[i].item(), target_ends_con[i].item()
+            s_incon, e_incon = target_starts_incon[i].item(), target_ends_incon[i].item()
+            s_base, e_base = target_starts_base[i].item(), target_ends_base[i].item()
 
-            len_logits_con = logits_con.shape[1]
-            len_logits_incon = logits_incon.shape[1]
-            len_logits_base = logits_base.shape[1]  # Original baseline
-            len_logits_con_rand = logits_con_rand.shape[1]
-            len_logits_incon_rand = logits_incon_rand.shape[1]
-            label_len = labels.shape[1]
+            # For random baselines, the target segment indices are relative to *their own* sequences,
+            # but should correspond to the *same target tokens* as their non-random counterparts.
+            # So, con_rand uses s_con, e_con but on con_random_baseline_input_ids.
+            # And incon_rand uses s_incon, e_incon but on incon_random_baseline_input_ids.
+            # The item_effective_target_len is implicitly e_con - s_con.
 
-            valid_con_indices = (0 <= start_con - 1 < end_con - 1 < len_logits_con and start_con < end_con <= label_len)
-            valid_incon_indices = (
-                        0 <= start_incon - 1 < end_incon - 1 < len_logits_incon and start_incon < end_incon <= label_len)
-            valid_base_indices = (
-                        0 <= start_base - 1 < end_base - 1 < len_logits_base and start_base < end_base <= label_len)  # Original baseline
-            valid_con_rand_indices = (
-                        0 <= start_con - 1 < end_con - 1 < len_logits_con_rand and start_con < end_con <= label_len)
-            valid_incon_rand_indices = (
-                        0 <= start_incon - 1 < end_incon - 1 < len_logits_incon_rand and start_incon < end_incon <= label_len)
+            if do_verbose_logging:
+                logger.debug(
+                    f"  Indices CON: s={s_con}, e={e_con} (len={e_con - s_con}). LogitSeqLen={logits_con.shape[1]}. InputIDsLen={congruent_input_ids.shape[1]}")
+                logger.debug(
+                    f"  Indices INCON: s={s_incon}, e={e_incon} (len={e_incon - s_incon}). LogitSeqLen={logits_incon.shape[1]}. InputIDsLen={incongruent_input_ids.shape[1]}")
+                logger.debug(
+                    f"  Indices BASE: s={s_base}, e={e_base} (len={e_base - s_base}). LogitSeqLen={logits_base.shape[1]}. InputIDsLen={baseline_input_ids.shape[1]}")
+                logger.debug(f"  Labels tensor shape for item: {labels[i].shape}")
 
-            if not (
-                    valid_con_indices and valid_incon_indices and valid_base_indices and valid_con_rand_indices and valid_incon_rand_indices):
-                logger.warning(
-                    f"Index out of bounds for item {i}, target {target_structure}. "
-                    f"Con: ({start_con},{end_con}) vs LogitLen={len_logits_con}. "
-                    f"Incon: ({start_incon},{end_incon}) vs LogitLen={len_logits_incon}. "
-                    f"Base: ({start_base},{end_base}) vs LogitLen={len_logits_base}. "  # Original baseline info
-                    f"ConRand: LogitLen={len_logits_con_rand}. InconRand: LogitLen={len_logits_incon_rand}. LabelLen={label_len}. Skipping."
-                )
+            # Validation: Ensure slice indices are valid for logits AND that target segment length is positive
+            # Logits are for predicting token AT an index, so we need logits up to `end_idx - 1`.
+            # Labels are tokens AT an index.
+            valid_con = (0 <= s_con - 1 < e_con - 1 < logits_con.shape[1]) and (s_con < e_con)
+            valid_incon = (0 <= s_incon - 1 < e_incon - 1 < logits_incon.shape[1]) and (s_incon < e_incon)
+            valid_base = (0 <= s_base - 1 < e_base - 1 < logits_base.shape[1]) and (s_base < e_base)
+            valid_con_rand = (0 <= s_con - 1 < e_con - 1 < logits_con_rand.shape[1]) and (s_con < e_con)
+            valid_incon_rand = (0 <= s_incon - 1 < e_incon - 1 < logits_incon_rand.shape[1]) and (s_incon < e_incon)
+
+            if not (valid_con and valid_incon and valid_base and valid_con_rand and valid_incon_rand):
+                if do_verbose_logging or logger.isEnabledFor(logging.WARNING):  # Log always if warning, or if verbose
+                    logger.warning(
+                        f"Idx validation fail item {i}, {target_structure}. C({valid_con}),I({valid_incon}),B({valid_base}),CR({valid_con_rand}),IR({valid_incon_rand})"
+                        f"  Con: ({s_con},{e_con}) vs LogitL={logits_con.shape[1]}. Incon: ({s_incon},{e_incon}) vs LogitL={logits_incon.shape[1]}."
+                        f"  Base: ({s_base},{e_base}) vs LogitL={logits_base.shape[1]}."
+                    )
                 batch_results[target_structure].append(nan_result)
                 continue
 
-            # Logits slices for target prediction (logit at t-1 predicts token at t)
-            logits_for_target_con = logits_con[i, start_con - 1: end_con - 1, :]
-            logits_for_target_incon = logits_incon[i, start_incon - 1: end_incon - 1, :]
-            logits_for_target_base = logits_base[i, start_base - 1: end_base - 1, :]  # Original baseline
-            logits_for_target_con_rand = logits_con_rand[i, start_con - 1: end_con - 1, :]
-            logits_for_target_incon_rand = logits_incon_rand[i, start_incon - 1: end_incon - 1, :]
+            logits_target_con = logits_con[i, s_con - 1:e_con - 1, :]
+            labels_target_con = congruent_input_ids[i, s_con:e_con]  # Labels are the actual tokens in that segment
 
-            # Label slices (token at t)
-            target_labels_con_segment = labels[i, start_con: end_con]
-            target_labels_incon_segment = labels[i, start_incon: end_incon]
-            target_labels_base_segment = labels[i, start_base: end_base]  # Original baseline
+            logits_target_incon = logits_incon[i, s_incon - 1:e_incon - 1, :]
+            labels_target_incon = incongruent_input_ids[i, s_incon:e_incon]
 
-            vocab_size = logits_con.size(-1)  # Assume vocab size is consistent
+            logits_target_base = logits_base[i, s_base - 1:e_base - 1, :]
+            labels_target_base = baseline_input_ids[i, s_base:e_base]
 
-            # --- Congruent ---
-            if logits_for_target_con.shape[0] == target_labels_con_segment.shape[0] and target_labels_con_segment.shape[
-                0] > 0:
-                log_prob_con_tensor = -F.cross_entropy(logits_for_target_con.reshape(-1, vocab_size),
-                                                       target_labels_con_segment.reshape(-1), ignore_index=-100,
-                                                       reduction='sum')
-                log_prob_con_val = log_prob_con_tensor.item()
-            else:
-                logger.warning(
-                    f"Logit/Label mismatch for CON: item {i}, target {target_structure}, LogitShape0 {logits_for_target_con.shape[0]}, LabelShape0 {target_labels_con_segment.shape[0]}")
+            logits_target_con_rand = logits_con_rand[i, s_con - 1:e_con - 1, :]
+            labels_target_con_rand = con_random_baseline_input_ids[i, s_con:e_con]  # Target tokens from this sequence
 
-            # --- Incongruent ---
-            if logits_for_target_incon.shape[0] == target_labels_incon_segment.shape[0] and \
-                    target_labels_incon_segment.shape[0] > 0:
-                log_prob_incon_tensor = -F.cross_entropy(logits_for_target_incon.reshape(-1, vocab_size),
-                                                         target_labels_incon_segment.reshape(-1), ignore_index=-100,
-                                                         reduction='sum')
-                log_prob_incon_val = log_prob_incon_tensor.item()
-            else:
-                logger.warning(
-                    f"Logit/Label mismatch for INCON: item {i}, target {target_structure}, LogitShape0 {logits_for_target_incon.shape[0]}, LabelShape0 {target_labels_incon_segment.shape[0]}")
+            logits_target_incon_rand = logits_incon_rand[i, s_incon - 1:e_incon - 1, :]
+            labels_target_incon_rand = incon_random_baseline_input_ids[i, s_incon:e_incon]
 
-            # --- Original Baseline ---
-            if logits_for_target_base.shape[0] == target_labels_base_segment.shape[0] and \
-                    target_labels_base_segment.shape[0] > 0:
-                log_prob_baseline_tensor = -F.cross_entropy(logits_for_target_base.reshape(-1, vocab_size),
-                                                            target_labels_base_segment.reshape(-1), ignore_index=-100,
-                                                            reduction='sum')
-                log_prob_baseline_val = log_prob_baseline_tensor.item()
-            else:
-                logger.warning(
-                    f"Logit/Label mismatch for BASELINE: item {i}, target {target_structure}, LogitShape0 {logits_for_target_base.shape[0]}, LabelShape0 {target_labels_base_segment.shape[0]}")
+            vocab_size = logits_con.size(-1)
 
-            # --- Congruent Random Baseline ---
-            # Uses target_labels_con_segment as the target is the same as for the congruent condition
-            if logits_for_target_con_rand.shape[0] == target_labels_con_segment.shape[0] and \
-                    target_labels_con_segment.shape[0] > 0:
-                log_prob_con_rand_tensor = -F.cross_entropy(logits_for_target_con_rand.reshape(-1, vocab_size),
-                                                            target_labels_con_segment.reshape(-1), ignore_index=-100,
-                                                            reduction='sum')
-                log_prob_con_rand_val = log_prob_con_rand_tensor.item()
-            else:
-                logger.warning(
-                    f"Logit/Label mismatch for CON_RAND: item {i}, target {target_structure}, LogitShape0 {logits_for_target_con_rand.shape[0]}, LabelShape0 {target_labels_con_segment.shape[0]}")
+            def get_logp(logits_slice, labels_slice, cond_name_log):
+                val = float('nan')
+                if logits_slice.shape[0] == labels_slice.shape[0] and labels_slice.shape[0] > 0:
+                    if do_verbose_logging:
+                        actual_ids = labels_slice[labels_slice != -100].tolist()  # Should not be -100 here
+                        actual_tokens = tokenizer.convert_ids_to_tokens(actual_ids) if actual_ids else []
+                        logger.debug(
+                            f"    {cond_name_log}: Scoring {len(actual_ids)} tokens: {actual_tokens} (IDs: {actual_ids})")
+                        logger.debug(
+                            f"    {cond_name_log}: Logit slice shape: {logits_slice.shape}, Label slice shape: {labels_slice.shape}")
 
-            # --- Incongruent Random Baseline ---
-            # Uses target_labels_incon_segment as the target is the same as for the incongruent condition
-            if logits_for_target_incon_rand.shape[0] == target_labels_incon_segment.shape[0] and \
-                    target_labels_incon_segment.shape[0] > 0:
-                log_prob_incon_rand_tensor = -F.cross_entropy(logits_for_target_incon_rand.reshape(-1, vocab_size),
-                                                              target_labels_incon_segment.reshape(-1),
-                                                              ignore_index=-100, reduction='sum')
-                log_prob_incon_rand_val = log_prob_incon_rand_tensor.item()
-            else:
-                logger.warning(
-                    f"Logit/Label mismatch for INCON_RAND: item {i}, target {target_structure}, LogitShape0 {logits_for_target_incon_rand.shape[0]}, LabelShape0 {target_labels_incon_segment.shape[0]}")
+                    # Ensure labels_slice doesn't have pad_token_id if that's also ignore_index
+                    # F.cross_entropy handles ignore_index=-100 internally if labels are constructed that way.
+                    # Here, labels_slice are actual token IDs from input_ids.
+                    logp_tensor = -F.cross_entropy(
+                        logits_slice.reshape(-1, vocab_size),
+                        labels_slice.reshape(-1),
+                        reduction='sum'
+                        # No ignore_index needed if labels_slice contains actual target tokens
+                    )
+                    val = logp_tensor.item()
+                elif do_verbose_logging or logger.isEnabledFor(logging.WARNING):
+                    logger.warning(
+                        f"Logit/Label len mismatch for {cond_name_log}: item {i}, {target_structure}, LogitShape0 {logits_slice.shape[0]}, LabelShape0 {labels_slice.shape[0]}"
+                    )
+                return val
+
+            log_prob_con_val = get_logp(logits_target_con, labels_target_con, "CON")
+            log_prob_incon_val = get_logp(logits_target_incon, labels_target_incon, "INCON")
+            log_prob_baseline_val = get_logp(logits_target_base, labels_target_base, "BASE")
+            log_prob_con_rand_val = get_logp(logits_target_con_rand, labels_target_con_rand, "CON_RAND")
+            log_prob_incon_rand_val = get_logp(logits_target_incon_rand, labels_target_incon_rand, "INCON_RAND")
+
+            if do_verbose_logging:
+                logger.debug(
+                    f"    LogP Vals: Con={log_prob_con_val:.4f}, Incon={log_prob_incon_val:.4f}, Base={log_prob_baseline_val:.4f}, CRand={log_prob_con_rand_val:.4f}, IRand={log_prob_incon_rand_val:.4f}")
 
             if math.isfinite(log_prob_con_val) and math.isfinite(log_prob_incon_val):
                 priming_effect = log_prob_con_val - log_prob_incon_val
-            # PE is NaN if con or incon is NaN. Other metrics can still be valid.
 
             current_result: ResultItem = {
-                'pe': priming_effect,
-                'logp_con': log_prob_con_val,
-                'logp_incon': log_prob_incon_val,
-                'logp_baseline': log_prob_baseline_val,  # Original baseline
-                'logp_con_random_baseline': log_prob_con_rand_val,
+                'pe': priming_effect, 'logp_con': log_prob_con_val, 'logp_incon': log_prob_incon_val,
+                'logp_baseline': log_prob_baseline_val, 'logp_con_random_baseline': log_prob_con_rand_val,
                 'logp_incon_random_baseline': log_prob_incon_rand_val
             }
+            batch_results[target_structure].append(
+                {k: (v if math.isfinite(v) else float('nan')) for k, v in current_result.items()})
 
-            if not all(math.isfinite(v) for v in current_result.values()):
-                logger.debug(f"Item {i}, target {target_structure} has some non-finite values: "
-                             f"PE={current_result['pe']:.4f}, LogP_con={current_result['logp_con']:.4f}, "
-                             f"LogP_incon={current_result['logp_incon']:.4f}, LogP_base={current_result['logp_baseline']:.4f}, "
-                             f"LogP_con_rand={current_result['logp_con_random_baseline']:.4f}, "
-                             f"LogP_incon_rand={current_result['logp_incon_random_baseline']:.4f}. Storing (NaNs where applicable).")
-                final_item_result = {k: (v if math.isfinite(v) else float('nan')) for k, v in current_result.items()}
-                batch_results[target_structure].append(final_item_result)
-            else:
-                batch_results[target_structure].append(current_result)
-
-        except IndexError as e:
-            logger.error(f"IndexError during metric calculation for item {i}, target {target_structure}. Err:{e}",
-                         exc_info=True)
+        except IndexError as e:  # ... (error handling as before)
+            logger.error(f"IndexError for item {i}, {target_structure}. Err:{e}", exc_info=True)
             batch_results[target_structure].append(nan_result)
-        except Exception as e:
-            logger.error(f"Unexpected error processing metrics for item {i}, target {target_structure}: {e}",
-                         exc_info=True)
+        except Exception as e:  # ... (error handling as before)
+            logger.error(f"Unexpected error for item {i}, {target_structure}: {e}", exc_info=True)
             batch_results[target_structure].append(nan_result)
 
     return dict(batch_results)
@@ -306,7 +251,7 @@ def calculate_priming_effect(
 
 def run_native_priming_eval(
         model: PreTrainedModel, priming_dataloader: DataLoader, device: torch.device,
-        tokenizer: PreTrainedTokenizer,
+        tokenizer: PreTrainedTokenizer,  # Pass tokenizer
         random_seed: Optional[int] = None,
         use_amp: bool = False
 ) -> EvalResults:
@@ -317,24 +262,30 @@ def run_native_priming_eval(
 
     torch_rng = torch.Generator(device=device)
     if random_seed is not None:
-        torch.manual_seed(random_seed)
+        torch.manual_seed(random_seed)  # Seed CPU for reproducibility if ops are on CPU first
         torch_rng.manual_seed(random_seed)
-        np.random.seed(random_seed)
-        random.seed(random_seed)
-        logger.info(f"Random seed set to {random_seed} for evaluation.")
+        # np.random.seed(random_seed) # Not directly used by torch_rng, but good practice
+        # random.seed(random_seed) # Python's random, not directly used by torch_rng
+        logger.info(f"Torch RNG seed set to {random_seed} for priming evaluation's prime shuffling.")
     else:
         logger.warning(
-            "No random_seed provided for priming evaluation. Randomization of con/incon primes will not be reproducible.")
+            "No random_seed provided for priming evaluation. Randomization of primes for random baselines will not be reproducible across runs.")
 
     all_results_raw: Dict[str, List[ResultItem]] = defaultdict(list)
+    progress_bar = tqdm(priming_dataloader, desc="Priming Eval", leave=False,
+                        disable=not sys.stdout.isatty() or not tqdm_module)
 
-    progress_bar = tqdm(priming_dataloader, desc="Priming Eval", leave=False)
     for batch_idx, batch in enumerate(progress_bar):
         if not batch:
             logger.warning(f"Skipping empty batch {batch_idx} from collate function.")
             continue
         try:
-            batch_metrics_raw: BatchResults = calculate_priming_effect(model, batch, device, torch_rng, use_amp=use_amp)
+            batch_metrics_raw: BatchResults = calculate_priming_effect(
+                model, batch, device, torch_rng, tokenizer, use_amp=use_amp,  # Pass tokenizer
+                is_first_batch_for_corpus=(batch_idx == 0),
+                max_verbose_items_per_batch=getattr(priming_dataloader.dataset, "max_verbose_items_to_log", 2)
+                # Example, needs better way to pass
+            )
             for target_structure, result_list in batch_metrics_raw.items():
                 all_results_raw[target_structure].extend(result_list)
         except Exception as e:
@@ -349,14 +300,15 @@ def run_native_priming_eval(
                     isinstance(r, dict) and key in r and math.isfinite(r[key])]
 
         finite_pe_values = get_finite_values('pe')
+        # ... (get other finite values) ...
         finite_logp_con_values = get_finite_values('logp_con')
         finite_logp_incon_values = get_finite_values('logp_incon')
-        finite_logp_baseline_values = get_finite_values('logp_baseline')  # Original baseline
+        finite_logp_baseline_values = get_finite_values('logp_baseline')
         finite_logp_con_rand_values = get_finite_values('logp_con_random_baseline')
         finite_logp_incon_rand_values = get_finite_values('logp_incon_random_baseline')
 
         total_items = len(structure_results_list)
-        logger.info(f"  Target '{target_structure}' (Total Items Processed: {total_items}):")
+        logger.info(f"  Target '{target_structure}' (Total Items Processed in evaluator: {total_items}):")
 
         def aggregate_and_log(metric_name_display: str, metric_key_base: str, values: List[float]):
             if values:
@@ -378,11 +330,10 @@ def run_native_priming_eval(
         aggregate_and_log("PE", "PE", finite_pe_values)
         aggregate_and_log("LogP_con", "LogP_con", finite_logp_con_values)
         aggregate_and_log("LogP_incon", "LogP_incon", finite_logp_incon_values)
-        aggregate_and_log("LogP_baseline", "LogP_baseline", finite_logp_baseline_values)  # Original baseline
+        aggregate_and_log("LogP_baseline", "LogP_baseline", finite_logp_baseline_values)
         aggregate_and_log("LogP_con_random_baseline", "LogP_con_random_baseline", finite_logp_con_rand_values)
         aggregate_and_log("LogP_incon_random_baseline", "LogP_incon_random_baseline", finite_logp_incon_rand_values)
 
-    if original_mode:
-        model.train()
+    if original_mode: model.train()
     logger.info("Native priming evaluation finished.")
     return final_aggregated_metrics, dict(all_results_raw)
