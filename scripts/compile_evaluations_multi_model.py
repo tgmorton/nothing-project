@@ -277,16 +277,16 @@ def compile_evaluations_multi_model(
     for model_dir in model_dirs:
         logger.info(f"Processing model directory: {model_dir}")
         priming_data, standard_data = process_model_directory(model_dir)
-        
+
         # Find max step across all models
         if priming_data:
             max_step_priming = max(item["checkpoint_step"] for item in priming_data if "checkpoint_step" in item)
             max_step = max(max_step, max_step_priming)
-        
+
         if standard_data:
             max_step_standard = max(item["checkpoint_step"] for item in standard_data if "checkpoint_step" in item)
             max_step = max(max_step, max_step_standard)
-        
+
         all_priming_data.extend(priming_data)
         all_standard_data.extend(standard_data)
 
@@ -339,12 +339,13 @@ def compile_evaluations_multi_model(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Compile evaluation data from multiple model directories into a single CSV file. "
+                    "Automatically finds all model directories in the specified superdirectory. "
                     "Extracts seed numbers from directory names and includes them as a column in the output CSV. "
-                    "Searches for evaluation files in the 'eval' subdirectory of each model directory."
+                    "Assumes each directory in the superdirectory is a model with an 'eval' subdirectory."
     )
     parser.add_argument(
-        "--model_dirs", type=str, nargs='+', required=True,
-        help="List of model directories to process. Each directory should contain an 'eval' subdirectory."
+        "--superdirectory", type=str, required=True,
+        help="Superdirectory containing model directories. Each subdirectory is assumed to be a model with an 'eval' folder."
     )
     parser.add_argument(
         "--output_dir", type=str, required=True,
@@ -355,7 +356,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    model_paths = [Path(model_dir) for model_dir in args.model_dirs]
+    superdirectory_path = Path(args.superdirectory)
     output_path = Path(args.output_dir)
 
     if args.debug:
@@ -364,16 +365,17 @@ if __name__ == "__main__":
             handler.setLevel(logging.DEBUG)
         logger.debug("DEBUG mode enabled.")
 
-    # Validate model directories
-    valid_model_paths = []
-    for model_path in model_paths:
-        if not model_path.is_dir():
-            logger.error(f"Model directory not found or is not a directory: {model_path}")
-            continue
-        valid_model_paths.append(model_path)
+    # Validate superdirectory
+    if not superdirectory_path.is_dir():
+        logger.error(f"Superdirectory not found or is not a directory: {superdirectory_path}")
+        exit(1)
 
-    if not valid_model_paths:
-        logger.error("No valid model directories provided.")
+    # Find all subdirectories in the superdirectory
+    model_paths = [d for d in superdirectory_path.iterdir() if d.is_dir()]
+    logger.info(f"Found {len(model_paths)} potential model directories in {superdirectory_path}")
+
+    if not model_paths:
+        logger.error(f"No subdirectories found in superdirectory: {superdirectory_path}")
         exit(1)
 
     # Validate output directory
@@ -384,4 +386,4 @@ if __name__ == "__main__":
         logger.error(f"Output path exists but is not a directory: {output_path}")
         exit(1)
 
-    compile_evaluations_multi_model(model_dirs=valid_model_paths, output_dir=output_path)
+    compile_evaluations_multi_model(model_dirs=model_paths, output_dir=output_path)
