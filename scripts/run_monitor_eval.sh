@@ -129,6 +129,7 @@ singularity exec --nv \
         --priming_per_device_eval_batch_size 8 \
         --eval_max_samples 5000 \
         --priming_eval_max_samples_per_file 1000 \
+        --priming_max_seq_length 512 \
         \
         --use_amp \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
@@ -139,6 +140,9 @@ singularity exec --nv \
         --neptune_training_run_name "${CONCEPTUAL_TRAINING_RUN_NAME}" \
         --run_standard_eval \
         --validation_dataset_path "${CONTAINER_VALID_DATA_PATH}" \
+        --log_level DEBUG # <<< ADD THIS LINE
+        # OR if you used the other flag in evaluate.py's parser:
+        # --verbose_eval_logging # <<< USE THIS INSTEAD IF IMPLEMENTED
 
 # === Job Completion ===
 echo "=== Job Finished: $(date) ==="
