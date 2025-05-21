@@ -138,9 +138,9 @@ singularity exec --nv \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_tags ${NEPTUNE_TAGS_FOR_MONITOR} \
         --neptune_training_run_name "${CONCEPTUAL_TRAINING_RUN_NAME}" \
-        --run_standard_eval \
-        --validation_dataset_path "${CONTAINER_VALID_DATA_PATH}" \
-        --log_level DEBUG # <<< ADD THIS LINE
+        --log_level DEBUG \
+        #--run_standard_eval \
+        #--validation_dataset_path "${CONTAINER_VALID_DATA_PATH}" \
         # OR if you used the other flag in evaluate.py's parser:
         # --verbose_eval_logging # <<< USE THIS INSTEAD IF IMPLEMENTED
 
