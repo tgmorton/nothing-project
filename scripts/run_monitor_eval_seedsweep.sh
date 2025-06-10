@@ -27,8 +27,29 @@ echo "Allocated CPUs: $SLURM_CPUS_PER_TASK"
 echo "Allocated Memory: $SLURM_MEM_PER_TASK"
 echo "GPUs: $CUDA_VISIBLE_DEVICES"
 
-# --- Find and Load necessary system modules ---
-source /etc/profile.d/modules.sh
+# THE ROBUST FIX: Wait for the network filesystem to be ready before sourcing.
+# This loop actively checks if the module system's core TCL script is readable,
+# preventing race conditions on job startup.
+MODULE_INIT_SCRIPT="/etc/profile.d/modules.sh"
+MODULE_CORE_FILE="/sscf/ssrde-storage/apps/modules/libexec/modulecmd.tcl"
+WAIT_SECONDS=10
+echo "Waiting up to ${WAIT_SECONDS}s for module system at ${MODULE_CORE_FILE} to be available..."
+for ((i=0; i<WAIT_SECONDS; i++)); do
+    if [ -r "${MODULE_CORE_FILE}" ]; then
+        echo "Module system is ready."
+        break
+    fi
+    sleep 1
+done
+
+if ! [ -r "${MODULE_CORE_FILE}" ]; then
+    echo "FATAL: Module system core file was not readable after ${WAIT_SECONDS} seconds."
+    exit 1
+fi
+
+# Now that we've confirmed the filesystem is ready, we can safely source.
+source "${MODULE_INIT_SCRIPT}"
+
 module load singularity/4.1.1 cuda/11.8 # <<< MODIFY versions if needed
 
 # --- Securely Load Neptune Credentials ---
