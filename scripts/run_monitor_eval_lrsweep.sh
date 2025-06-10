@@ -38,33 +38,28 @@ echo "GPUs: $CUDA_VISIBLE_DEVICES"
 # --- Load necessary system modules ---
 echo "Loading system modules..."
 
-# THE FIX (MORE ROBUST): Check for several possible module init scripts
-# and source the first one that exists. This handles nodes with different configs.
-MODULE_INIT_SCRIPT=""
-POSSIBLE_SCRIPTS=(
-    "/etc/profile.d/modules.sh"
-    "/usr/share/modules/init/bash"
-    "/etc/profile.d/lmod.sh"
-)
-
-# Add a small delay in case of slow network file system mounts
-sleep 2
-
-for script_path in "${POSSIBLE_SCRIPTS[@]}"; do
-    if [ -f "$script_path" ]; then
-        MODULE_INIT_SCRIPT="$script_path"
-        echo "Found module initialization script at: ${MODULE_INIT_SCRIPT}"
+# THE ROBUST FIX: Wait for the network filesystem to be ready before sourcing.
+# This loop actively checks if the module system's core TCL script is readable,
+# preventing race conditions on job startup.
+MODULE_INIT_SCRIPT="/etc/profile.d/modules.sh"
+MODULE_CORE_FILE="/sscf/ssrde-storage/apps/modules/libexec/modulecmd.tcl"
+WAIT_SECONDS=10
+echo "Waiting up to ${WAIT_SECONDS}s for module system at ${MODULE_CORE_FILE} to be available..."
+for ((i=0; i<WAIT_SECONDS; i++)); do
+    if [ -r "${MODULE_CORE_FILE}" ]; then
+        echo "Module system is ready."
         break
     fi
+    sleep 1
 done
 
-if [ -n "$MODULE_INIT_SCRIPT" ]; then
-    source "$MODULE_INIT_SCRIPT"
-else
-    echo "FATAL: Could not find a module initialization script on this node."
+if ! [ -r "${MODULE_CORE_FILE}" ]; then
+    echo "FATAL: Module system core file was not readable after ${WAIT_SECONDS} seconds."
     exit 1
 fi
 
+# Now that we've confirmed the filesystem is ready, we can safely source.
+source "${MODULE_INIT_SCRIPT}"
 
 # This command will now work correctly
 module load singularity/4.1.1 cuda/11.8
