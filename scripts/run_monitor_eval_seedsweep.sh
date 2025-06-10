@@ -156,6 +156,7 @@ singularity exec --nv \
         --use_amp \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
         --seed ${CURRENT_SEED} \
+        --no_skip_processed_checkpoints \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_tags ${NEPTUNE_TAGS_FOR_MONITOR} \
