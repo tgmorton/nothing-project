@@ -29,57 +29,32 @@ def calculate_full_metrics_for_batch(
         use_amp: bool = False
 ) -> BatchResults:
     """
-    Calculates all required log-probabilities for a batch of data.
+    Calculates log-probabilities from pre-assembled and padded tensors.
     """
     try:
-        # --- KEY CHANGE: Move all required tensors from the batch to the correct device FIRST ---
-        tensor_keys = [
-            'congruent_prime_input_ids', 'incongruent_prime_input_ids',
-            'congruent_target_input_ids', 'incongruent_target_input_ids'
+        # --- KEY CHANGE: The batch now contains fully-formed sequences. We just move them to the device. ---
+        sequence_keys = [
+            'con_prime_con_target_ids', 'con_prime_incon_target_ids',
+            'incon_prime_con_target_ids', 'incon_prime_incon_target_ids',
+            'base_con_target_ids', 'base_incon_target_ids'
         ]
-        for key in tensor_keys:
+        all_input_ids_list = []
+        for key in sequence_keys:
             if key in batch and isinstance(batch[key], torch.Tensor):
-                batch[key] = batch[key].to(device)
+                all_input_ids_list.append(batch[key].to(device))
             else:
                 raise KeyError(f"Batch from DataLoader is missing required tensor key: {key}")
-        # --- End of Change ---
 
-        # Concatenate all inputs for a single mega-batch forward pass
-        con_prime_con_target = torch.cat([batch['congruent_prime_input_ids'], batch['congruent_target_input_ids']],
-                                         dim=1)
-        con_prime_incon_target = torch.cat([batch['congruent_prime_input_ids'], batch['incongruent_target_input_ids']],
-                                           dim=1)
-        incon_prime_con_target = torch.cat([batch['incongruent_prime_input_ids'], batch['congruent_target_input_ids']],
-                                           dim=1)
-        incon_prime_incon_target = torch.cat(
-            [batch['incongruent_prime_input_ids'], batch['incongruent_target_input_ids']], dim=1)
-
-        # Now that batch tensors are on the correct device, this will also be on the correct device
-        bos_tensor = torch.tensor([[tokenizer.bos_token_id]], device=device).expand(
-            batch['congruent_target_input_ids'].size(0), -1)
-        base_con_target = torch.cat([bos_tensor, batch['congruent_target_input_ids']], dim=1)
-        base_incon_target = torch.cat([bos_tensor, batch['incongruent_target_input_ids']], dim=1)
-
-        all_input_ids = torch.cat([
-            con_prime_con_target, con_prime_incon_target,
-            incon_prime_con_target, incon_prime_incon_target,
-            base_con_target, base_incon_target
-        ], dim=0)
-
+        # Now we create the single mega-batch tensor. This should not error.
+        all_input_ids = torch.cat(all_input_ids_list, dim=0)
         all_attention_mask = (all_input_ids != tokenizer.pad_token_id).long()
 
-    except (KeyError, AttributeError) as e:
-        logger.error(f"Batch missing a required key or attribute: {e}. Check your dataloader.")
-        return {}
     except Exception as e:
         logger.error(f"Error preparing mega-batch for device {device}: {e}", exc_info=True)
         return {}
 
-    original_batch_size = batch['congruent_prime_input_ids'].size(0)
+    original_batch_size = batch['con_prime_con_target_ids'].size(0)
 
-    # (The rest of the function for forward pass and log-prob calculation remains the same)
-
-    # ... (rest of function is identical to the one I sent previously) ...
     try:
         amp_enabled = use_amp and device.type == 'cuda'
         with torch.no_grad():
@@ -95,39 +70,39 @@ def calculate_full_metrics_for_batch(
     logits_list = torch.chunk(logits, 6, dim=0)
     labels_list = torch.chunk(labels, 6, dim=0)
 
-    target_starts = [
-        batch['con_target_start_in_con_prime_context'], batch['incon_target_start_in_con_prime_context'],
-        batch['con_target_start_in_incon_prime_context'], batch['incon_target_start_in_incon_prime_context'],
-        torch.full((original_batch_size,), 1, dtype=torch.long, device=device),  # Use full tensor
-        torch.full((original_batch_size,), 1, dtype=torch.long, device=device)  # Use full tensor
-    ]
+    # These start indices are now simple integers since the logic is in the dataloader
+    target_starts_map = {
+        'logp_conT_conP': batch['con_target_start_in_con_prime_context'],
+        'logp_inconT_conP': batch['incon_target_start_in_con_prime_context'],
+        'logp_conT_inconP': batch['con_target_start_in_incon_prime_context'],
+        'logp_inconT_inconP': batch['incon_target_start_in_incon_prime_context'],
+        'logp_conT_base': torch.full((original_batch_size,), 1, dtype=torch.long),
+        'logp_inconT_base': torch.full((original_batch_size,), 1, dtype=torch.long),
+    }
 
-    log_prob_keys = [
-        'logp_conT_conP', 'logp_inconT_conP',
-        'logp_conT_inconP', 'logp_inconT_inconP',
-        'logp_conT_base', 'logp_inconT_base'
-    ]
-
+    log_prob_keys = list(target_starts_map.keys())
     log_probs_per_item = [defaultdict(float) for _ in range(original_batch_size)]
 
-    for k, (key, logit_tensor, label_tensor, start_indices) in enumerate(
-            zip(log_prob_keys, logits_list, labels_list, target_starts)):
+    for k, key in enumerate(log_prob_keys):
+        logit_tensor, label_tensor = logits_list[k], labels_list[k]
+        start_indices = target_starts_map[key].to(device)
         vocab_size = logit_tensor.size(-1)
-        # Move start_indices to the correct device if it's not already
-        start_indices = start_indices.to(device)
+
         for i in range(original_batch_size):
             try:
                 target_start_idx = start_indices[i].item()
+                if target_start_idx == 0:  # 0 is an invalid start index (must be > BOS)
+                    log_probs_per_item[i][key] = float('nan')
+                    continue
+
                 item_labels = label_tensor[i, target_start_idx:]
                 non_padding_len = (item_labels != -100).sum().item()
 
                 if non_padding_len == 0:
-                    logger.warning(f"Item {i} has zero-length target for '{key}'. Skipping.")
                     log_probs_per_item[i][key] = float('nan')
                     continue
 
                 target_end_idx = target_start_idx + non_padding_len
-
                 logits_for_target = logit_tensor[i, target_start_idx - 1: target_end_idx - 1, :]
                 labels_for_target = label_tensor[i, target_start_idx: target_end_idx]
 

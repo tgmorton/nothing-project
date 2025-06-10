@@ -105,40 +105,61 @@ def collate_for_new_evaluator(
         batch: List[Dict[str, Any]],
         tokenizer: PreTrainedTokenizer,
 ) -> Dict[str, Any]:
+    """
+    NEW collate function. Assembles all 6 sequence variations, finds the max length,
+    and pads everything to that single length before returning.
+    """
     batch = [item for item in batch if item is not None]
     if not batch: return {}
 
     collated_batch = defaultdict(list)
+    bos_id = tokenizer.bos_token_id
+    pad_id = tokenizer.pad_token_id
 
-    sentence_keys = ['congruent_prime', 'incongruent_prime', 'congruent_target', 'incongruent_target']
+    if bos_id is None:
+        logger.error("Tokenizer must have a BOS token for this evaluation.")
+        return {}
 
-    for key in sentence_keys:
-        sentences = [item[key] for item in batch]
-        tokenized_output = tokenizer(sentences, add_special_tokens=False)
-        collated_batch[f'_{key}_tokens'] = tokenized_output['input_ids']
+    # --- 1. Tokenize all sentence components ---
+    keys = ['congruent_prime', 'incongruent_prime', 'congruent_target', 'incongruent_target']
+    tokenized_parts = defaultdict(list)
+    for item in batch:
+        for key in keys:
+            tokenized_parts[key].append(tokenizer(item[key], add_special_tokens=False)['input_ids'])
 
-    bos_offset = 1
-    collated_batch['con_target_start_in_con_prime_context'] = [len(tokens) + bos_offset for tokens in
-                                                               collated_batch['_congruent_prime_tokens']]
-    collated_batch['incon_target_start_in_con_prime_context'] = [len(tokens) + bos_offset for tokens in
-                                                                 collated_batch['_congruent_prime_tokens']]
-    collated_batch['con_target_start_in_incon_prime_context'] = [len(tokens) + bos_offset for tokens in
-                                                                 collated_batch['_incongruent_prime_tokens']]
-    collated_batch['incon_target_start_in_incon_prime_context'] = [len(tokens) + bos_offset for tokens in
-                                                                   collated_batch['_incongruent_prime_tokens']]
+    # --- 2. Assemble all 6 sequence variations (as lists of token IDs) ---
+    # These lists will have ragged lengths
+    sequences_to_pad = defaultdict(list)
+    for i in range(len(batch)):
+        cp_toks = tokenized_parts['congruent_prime'][i]
+        ip_toks = tokenized_parts['incongruent_prime'][i]
+        ct_toks = tokenized_parts['congruent_target'][i]
+        it_toks = tokenized_parts['incongruent_target'][i]
 
-    pad_token_id = tokenizer.pad_token_id
-    for key in sentence_keys:
-        sequences = [torch.tensor(tokens) for tokens in collated_batch[f'_{key}_tokens']]
-        padded_sequences = pad_sequence(sequences, batch_first=True, padding_value=pad_token_id)
-        # --- KEY CHANGE: Use full, consistent names ---
-        final_key = key
-        # --- End of Change ---
-        collated_batch[f'{final_key}_input_ids'] = padded_sequences
-        del collated_batch[f'_{key}_tokens']
+        # Assemble the 4 prime-target combinations
+        sequences_to_pad['con_prime_con_target_ids'].append([bos_id] + cp_toks + ct_toks)
+        sequences_to_pad['con_prime_incon_target_ids'].append([bos_id] + cp_toks + it_toks)
+        sequences_to_pad['incon_prime_con_target_ids'].append([bos_id] + ip_toks + ct_toks)
+        sequences_to_pad['incon_prime_incon_target_ids'].append([bos_id] + ip_toks + it_toks)
 
+        # Assemble the 2 baseline targets
+        sequences_to_pad['base_con_target_ids'].append([bos_id] + ct_toks)
+        sequences_to_pad['base_incon_target_ids'].append([bos_id] + it_toks)
+
+        # Also store the start indices needed by the evaluator
+        collated_batch['con_target_start_in_con_prime_context'].append(len(cp_toks) + 1)
+        collated_batch['incon_target_start_in_con_prime_context'].append(len(cp_toks) + 1)
+        collated_batch['con_target_start_in_incon_prime_context'].append(len(ip_toks) + 1)
+        collated_batch['incon_target_start_in_incon_prime_context'].append(len(ip_toks) + 1)
+        # Baseline start is always 1 (after BOS), handled in evaluator
+
+    # --- 3. Pad all assembled sequences to a single max length ---
+    for key, sequences in sequences_to_pad.items():
+        tensor_sequences = [torch.tensor(s) for s in sequences]
+        collated_batch[key] = pad_sequence(tensor_sequences, batch_first=True, padding_value=pad_id)
+
+    # --- 4. Finalize other metadata ---
     collated_batch['target_structure'] = [item['target_structure'] for item in batch]
-
     index_keys = [
         'con_target_start_in_con_prime_context', 'incon_target_start_in_con_prime_context',
         'con_target_start_in_incon_prime_context', 'incon_target_start_in_incon_prime_context'
