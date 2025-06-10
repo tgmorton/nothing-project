@@ -118,7 +118,7 @@ for CURRENT_SEED in {1..10}; do
             ${WATCH_MODE_ARG} \
             \
             --run_priming_eval \
-            --priming_eval_dir_path "/eval/priming-corpuses_no_null" \
+            --priming_eval_dir_path "/eval/priming_simple_no_null" \
             \
             --base_model_name "gpt2" \
             --model_class_name "GPT2LMHeadModel" \
