@@ -28,16 +28,7 @@ echo "Allocated Memory: $SLURM_MEM_PER_TASK"
 echo "GPUs: $CUDA_VISIBLE_DEVICES"
 
 # --- Find and Load necessary system modules ---
-echo "Searching for module initialization script on compute node..."
-find /etc /usr -name "modules.sh" -o -name "lmod.sh" 2>/dev/null || echo "Module script not found."
-
-echo "Loading system modules..."
-# ---- TRY ONE OF THESE COMMON PATHS ----
-# You will likely find the correct path from the 'find' command above.
-# If the find command returns /usr/share/modules/init/bash, use that.
-
-source /usr/share/modules/init/bash  # <<< TRY THIS PATH FIRST
-
+source /etc/profile.d/modules.sh
 module load singularity/4.1.1 cuda/11.8 # <<< MODIFY versions if needed
 
 # --- Securely Load Neptune Credentials ---
