@@ -129,12 +129,14 @@ def calculate_full_metrics_for_batch(
     return dict(batch_results)
 
 
-# (run_native_priming_eval function remains the same as the previous version)
 def run_native_priming_eval(
         model: PreTrainedModel, priming_dataloader: DataLoader, device: torch.device,
         tokenizer: PreTrainedTokenizer,
         use_amp: bool = False
 ) -> EvalResults:
+    """
+    Runs the full native priming evaluation loop.
+    """
     logger.info("Starting expanded native priming evaluation...")
     original_mode = model.training
     model.eval()
@@ -171,6 +173,8 @@ def run_native_priming_eval(
             logp_ct_base = raw_probs.get('logp_conT_base', float('nan'))
             logp_it_base = raw_probs.get('logp_inconT_base', float('nan'))
 
+            # (Calculations for PE, Normalized Probs, and Baseline remain the same)
+            # ...
             if math.isfinite(logp_ct_cp) and math.isfinite(logp_ct_ip):
                 pe = logp_ct_cp - logp_ct_ip
                 pe_scores.append(pe)
@@ -199,12 +203,25 @@ def run_native_priming_eval(
 
             final_raw_item_metrics[structure].append(item_metrics)
 
+        # Aggregate and store all metrics
         final_aggregated_metrics[f'avg_pe_sinclair_{structure}'] = np.mean(pe_scores) if pe_scores else float('nan')
         final_aggregated_metrics[f'std_pe_sinclair_{structure}'] = np.std(pe_scores) if pe_scores else float('nan')
-        final_aggregated_metrics[f'avg_norm_p_conT_given_conP_{structure}'] = np.mean(
-            norm_p_con_target_given_con_prime) if norm_p_con_target_given_con_prime else float('nan')
-        final_aggregated_metrics[f'avg_norm_p_conT_given_inconP_{structure}'] = np.mean(
+
+        avg_norm_p_con = np.mean(norm_p_con_target_given_con_prime) if norm_p_con_target_given_con_prime else float(
+            'nan')
+        avg_norm_p_incon = np.mean(
             norm_p_con_target_given_incon_prime) if norm_p_con_target_given_incon_prime else float('nan')
+
+        final_aggregated_metrics[f'avg_norm_p_conT_given_conP_{structure}'] = avg_norm_p_con
+        final_aggregated_metrics[f'avg_norm_p_conT_given_inconP_{structure}'] = avg_norm_p_incon
+
+        # --- NEW: Calculate the direct comparison metric ---
+        if math.isfinite(avg_norm_p_con) and math.isfinite(avg_norm_p_incon):
+            final_aggregated_metrics[f'priming_effect_normalized_{structure}'] = avg_norm_p_con - avg_norm_p_incon
+        else:
+            final_aggregated_metrics[f'priming_effect_normalized_{structure}'] = float('nan')
+        # --- End of New Code ---
+
         final_aggregated_metrics[f'avg_baseline_pref_for_conT_{structure}'] = np.mean(
             baseline_prefs_for_con_target) if baseline_prefs_for_con_target else float('nan')
         final_aggregated_metrics[f'count_{structure}'] = len(results_list)
