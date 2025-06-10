@@ -38,8 +38,33 @@ echo "GPUs: $CUDA_VISIBLE_DEVICES"
 # --- Load necessary system modules ---
 echo "Loading system modules..."
 
-# THE FIX: Source the module initialization script before using the 'module' command
-source /etc/profile.d/modules.sh
+# THE FIX (MORE ROBUST): Check for several possible module init scripts
+# and source the first one that exists. This handles nodes with different configs.
+MODULE_INIT_SCRIPT=""
+POSSIBLE_SCRIPTS=(
+    "/etc/profile.d/modules.sh"
+    "/usr/share/modules/init/bash"
+    "/etc/profile.d/lmod.sh"
+)
+
+# Add a small delay in case of slow network file system mounts
+sleep 2
+
+for script_path in "${POSSIBLE_SCRIPTS[@]}"; do
+    if [ -f "$script_path" ]; then
+        MODULE_INIT_SCRIPT="$script_path"
+        echo "Found module initialization script at: ${MODULE_INIT_SCRIPT}"
+        break
+    fi
+done
+
+if [ -n "$MODULE_INIT_SCRIPT" ]; then
+    source "$MODULE_INIT_SCRIPT"
+else
+    echo "FATAL: Could not find a module initialization script on this node."
+    exit 1
+fi
+
 
 # This command will now work correctly
 module load singularity/4.1.1 cuda/11.8
