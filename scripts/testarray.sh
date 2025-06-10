@@ -1,77 +1,123 @@
 #!/bin/bash
 
-#SBATCH --job-name=env_array_test
-#SBATCH --partition=general_gpu_a5000  # Use the partition that was failing
+# ==============================================================================
+#  Advanced SLURM Environment & Filesystem Diagnostic Script
+# ==============================================================================
+#
+#  Purpose: To aggressively debug inconsistent module loading issues in a
+#           SLURM array job by assuming nothing about the node's environment.
+#
+# ==============================================================================
+
+# === SBATCH Directives ===
+# Use the partition where jobs have been failing
+#SBATCH --job-name=paranoid_env_test
+#SBATCH --partition=general_gpu_a5000
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=1G
-#SBATCH --time=00:05:00
-#SBATCH --output=../logs/env_array_test_%A_%a.out # %A is job ID, %a is array task ID
-#SBATCH --error=../logs/env_array_test_%A_%a.err
-#SBATCH --array=1-2 # Run two tasks to see if they land on different nodes
+#SBATCH --time=00:10:00
+#SBATCH --output=../logs/paranoid_test_%A_%a.out # JobID_TaskID
+#SBATCH --error=../logs/paranoid_test_%A_%a.err
+#SBATCH --array=1-3 # Run 3 tasks to maximize chances of hitting a bad node
 
-# ==============================================================================
-#  SLURM Environment Diagnostic Script
-# ==============================================================================
-
-echo "=== DIAGNOSTIC JOB STARTED: $(date) ==="
+# --- Start of Script ---
+echo "================================================================"
+echo "=== ADVANCED DIAGNOSTIC STARTED: $(date)"
+echo "================================================================"
 echo "Job ID: $SLURM_JOB_ID, Array Task ID: $SLURM_ARRAY_TASK_ID"
 echo "Node Hostname: $(hostname)"
-echo "Shell: $SHELL"
-echo "========================================="
-echo ""
+echo "Executing Shell: $SHELL"
+echo "---"
 
-echo "--- 1. Checking for Module Init Scripts ---"
-echo "Checking for /etc/profile.d/modules.sh..."
-if [ -f "/etc/profile.d/modules.sh" ]; then
-    echo "    FOUND: /etc/profile.d/modules.sh"
-    echo "    Permissions: $(ls -l /etc/profile.d/modules.sh)"
+# --- 1. Filesystem & Permissions Deep Dive ---
+echo "[STEP 1] Performing deep check for module initialization scripts..."
+echo "This checks existence, permissions, and resolves symbolic links."
+
+POSSIBLE_SCRIPTS=(
+    "/etc/profile.d/modules.sh"
+    "/usr/share/modules/init/bash"
+    "/etc/profile.d/lmod.sh"
+)
+MODULE_INIT_SCRIPT=""
+
+# Loop through potential scripts to find a valid one
+for script_path in "${POSSIBLE_SCRIPTS[@]}"; do
+    echo " -> Checking path: ${script_path}"
+    # Use ls to check existence and permissions. It's more reliable than [ -f ] for NFS.
+    ls -ld "${script_path}" > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        echo "    FOUND: File exists. Details: $(ls -ld "${script_path}")"
+
+        # If it's a symlink, find its ultimate target
+        if [ -L "${script_path}" ]; then
+            target_path=$(readlink -f "${script_path}")
+            echo "    INFO: It's a symbolic link. Target is: ${target_path}"
+            echo "    INFO: Target details: $(ls -ld "${target_path}")"
+        fi
+
+        # Crucial test: Check if the file is readable by us right now
+        if [ -r "${script_path}" ]; then
+            echo "    SUCCESS: File is readable. Selecting this one."
+            MODULE_INIT_SCRIPT="${script_path}"
+            break # Exit the loop since we found a valid script
+        else
+            echo "    WARNING: File exists but is NOT readable. Continuing search..."
+        fi
+    else
+        echo "    NOT FOUND."
+    fi
+done
+echo "---"
+
+
+# --- 2. Shell Execution Trace ---
+# This is the most critical step. 'set -x' prints every command to stderr
+# right before it's executed, showing us exactly where the failure occurs.
+echo "[STEP 2] Attempting to source the found script with shell tracing enabled."
+echo "Check the .err log for output prefixed with '+'."
+
+if [ -n "$MODULE_INIT_SCRIPT" ]; then
+    # Enable command tracing and pipe it to stderr
+    set -x
+    # THE ACTUAL TEST: Source the script we found and validated
+    source "$MODULE_INIT_SCRIPT"
+    # Disable command tracing
+    set +x
+    echo "SUCCESS: The 'source' command completed without a fatal script error."
 else
-    echo "    NOT FOUND: /etc/profile.d/modules.sh"
+    echo "FATAL: No readable module initialization script was found. Cannot proceed."
+    echo "================================================================"
+    echo "=== DIAGNOSTIC FAILED: $(date)"
+    echo "================================================================"
+    exit 1
 fi
+echo "---"
 
-echo "Checking for /usr/share/modules/init/bash..."
-if [ -f "/usr/share/modules/init/bash" ]; then
-    echo "    FOUND: /usr/share/modules/init/bash"
-    echo "    Permissions: $(ls -l /usr/share/modules/init/bash)"
+
+# --- 3. Post-Source Verification ---
+echo "[STEP 3] Verifying that the 'module' command is now available."
+# 'type' is a shell builtin that tells you what a command is (alias, function, file)
+type module
+if [ $? -eq 0 ]; then
+    echo "SUCCESS: The 'module' command is now defined as a function."
+    echo "Attempting to get module system version..."
+    module --version
+    echo "---"
+    echo "Attempting to list available modules (first 15 lines)..."
+    module avail 2>&1 | head -n 15
 else
-    echo "    NOT FOUND: /usr/share/modules/init/bash"
+    echo "FAILURE: The 'module' command is still not defined after sourcing."
 fi
-echo ""
+echo "---"
 
-echo "--- 2. Attempting to Source and Load ---"
-# Attempt to source the most likely candidate
-MODULE_INIT_SCRIPT="/etc/profile.d/modules.sh"
-
-if [ -f "$MODULE_INIT_SCRIPT" ]; then
-    echo "Attempting to source $MODULE_INIT_SCRIPT ..."
-    # Use a subshell to avoid polluting the main script's environment if it fails
-    (
-      source "$MODULE_INIT_SCRIPT"
-      echo "    Source command executed without error."
-      echo "    Attempting 'module --version':"
-      module --version 2>&1 || echo "    'module --version' FAILED"
-      echo ""
-      echo "    Attempting 'module avail':"
-      module avail 2>&1 | head -n 10 || echo "    'module avail' FAILED"
-    )
-else
-    echo "$MODULE_INIT_SCRIPT not found, cannot test sourcing."
-fi
-echo ""
-
-echo "--- 3. Checking PATH variable ---"
-echo "$PATH"
-echo ""
-
-echo "--- 4. Checking for 'module' command in PATH ---"
-which module || echo "'module' is not an executable in the PATH"
-echo ""
-
-echo "--- 5. Listing contents of /etc/profile.d/ ---"
-ls -l /etc/profile.d/
-echo ""
+# --- 4. Full Environment Dump ---
+echo "[STEP 4] Dumping all environment variables for review."
+env | sort
+echo "---"
 
 
-echo "=== DIAGNOSTIC JOB FINISHED: $(date) ==="
+echo "================================================================"
+echo "=== DIAGNOSTIC FINISHED: $(date)"
+echo "================================================================"
