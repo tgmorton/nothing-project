@@ -2,12 +2,11 @@
 
 # === SBATCH Directives (Unchanged) ===
 #SBATCH --job-name=gpt2_p6000_sif_10m_LOCALEVAL # Modified job name slightly
-#SBATCH --partition=general_gpu_p6000
+#SBATCH --partition=general_gpu_a5000
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
-#SBATCH --gres=gpu:1
 #SBATCH --time=7-0:00:00
 #SBATCH --output=../logs/%x_%j.out
 #SBATCH --error=../logs/%x_%j.err
