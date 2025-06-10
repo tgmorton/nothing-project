@@ -149,7 +149,7 @@ def run_evaluation_for_checkpoint(
         "--model_class_name", monitor_args.model_class_name,
         "--base_model_name", monitor_args.base_model_name,
         "--num_workers", str(monitor_args.num_workers),
-        "--seed", str(monitor_args.seed),
+        #"--seed", str(monitor_args.seed),
     ]
 
     if monitor_args.priming_per_device_eval_batch_size is not None:
