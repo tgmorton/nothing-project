@@ -125,7 +125,7 @@ for CURRENT_SEED in {1..10}; do
             --per_device_eval_batch_size 8 \
             --priming_per_device_eval_batch_size 8 \
             --eval_max_samples 5000 \
-            --priming_eval_max_samples_per_file 1000 \
+            --priming_eval_max_samples_per_file 100 \
             \
             --use_amp \
             --num_workers ${SLURM_CPUS_PER_TASK:-4} \
