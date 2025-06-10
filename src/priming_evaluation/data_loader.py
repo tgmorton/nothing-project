@@ -1,4 +1,4 @@
-# src/priming_evaluation/data_loader.py (Revised again for dynamic column handling)
+# src/priming_evaluation/data_loader.py (Corrected for key name consistency)
 
 import logging
 from collections import defaultdict
@@ -13,25 +13,19 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from transformers import PreTrainedTokenizer
 
+# (The file is mostly the same as the last version, with one key change in collate_for_new_evaluator)
 logger = logging.getLogger(__name__)
 
 
-# --- NEW: Helper function to find the structures from column names ---
 def get_structure_alternations(columns: List[str]) -> Optional[Tuple[str, str]]:
-    """
-    Identifies the two grammatical structures from a list of column names.
-    e.g., from ['pthat', 'pnull', 'tthat', 'tnull'], it returns ('null', 'that').
-    """
     structures = set()
     for col in columns:
         if col.startswith('p') or col.startswith('t'):
-            # Strip the 'p' or 't' prefix to get the structure name
             structure_name = col[1:]
-            if structure_name:  # Ensure it's not an empty string
+            if structure_name:
                 structures.add(structure_name)
-
     if len(structures) == 2:
-        return tuple(sorted(list(structures)))  # Return in a consistent order
+        return tuple(sorted(list(structures)))
     else:
         logger.warning(f"Could not determine exactly two structures. Found: {structures} from columns: {columns}")
         return None
@@ -52,14 +46,7 @@ class PrimingEvaluationDataset(Dataset):
         return self.data[idx]
 
 
-def load_and_process_priming_data(
-        csv_path: Path,
-) -> List[Dict[str, Any]]:
-    """
-    REVISED: Loads priming data from a CSV with dynamic column names.
-    It auto-detects the alternation (e.g., 'that'/'null') and maps columns
-    like 'pthat', 'tnull' to the generic 'congruent_prime', 'incongruent_target' keys.
-    """
+def load_and_process_priming_data(csv_path: Path) -> List[Dict[str, Any]]:
     processed_data = []
     csv_filename = csv_path.name
     try:
@@ -69,17 +56,14 @@ def load_and_process_priming_data(
         logger.error(f"Error loading or processing CSV {csv_filename}: {e}");
         return []
 
-    # Dynamically determine the structures (e.g., 'null', 'that') from the columns
     alternation = get_structure_alternations(list(df.columns))
     if alternation is None:
-        logger.error(
-            f"Could not process {csv_filename}. Ensure it has columns like 'p<struct1>', 't<struct1>', 'p<struct2>', 't<struct2>'.")
+        logger.error(f"Could not process {csv_filename}.")
         return []
 
     struct1, struct2 = alternation
     logger.info(f"Detected alternation for {csv_filename}: '{struct1}' vs '{struct2}'")
 
-    # Construct the actual column names based on detected structures
     p_col1, p_col2 = f'p{struct1}', f'p{struct2}'
     t_col1, t_col2 = f't{struct1}', f't{struct2}'
     required_cols = [p_col1, p_col2, t_col1, t_col2]
@@ -95,19 +79,15 @@ def load_and_process_priming_data(
             prime1, prime2 = str(row[p_col1]), str(row[p_col2])
             target1, target2 = str(row[t_col1]), str(row[t_col2])
 
-            # Skip row if any of the cells are empty or 'nan'
             if not all(s and s.lower() != 'nan' for s in [prime1, prime2, target1, target2]):
                 logger.warning(f"Skipping row {index} in {csv_filename} due to empty or 'nan' value.")
                 continue
 
-            # Create TWO items per row to test priming in both directions
-            # Item 1: struct1 is congruent
             processed_data.append({
                 'congruent_prime': prime1, 'incongruent_prime': prime2,
                 'congruent_target': target1, 'incongruent_target': target2,
                 'target_structure': struct1, 'source_csv': csv_filename, 'csv_row': index
             })
-            # Item 2: struct2 is congruent
             processed_data.append({
                 'congruent_prime': prime2, 'incongruent_prime': prime1,
                 'congruent_target': target2, 'incongruent_target': target1,
@@ -125,10 +105,6 @@ def collate_for_new_evaluator(
         batch: List[Dict[str, Any]],
         tokenizer: PreTrainedTokenizer,
 ) -> Dict[str, Any]:
-    """
-    This collate function takes items with generic keys ('congruent_prime', etc.)
-    and prepares the tensors for the evaluator. This function does NOT need to change.
-    """
     batch = [item for item in batch if item is not None]
     if not batch: return {}
 
@@ -155,7 +131,9 @@ def collate_for_new_evaluator(
     for key in sentence_keys:
         sequences = [torch.tensor(tokens) for tokens in collated_batch[f'_{key}_tokens']]
         padded_sequences = pad_sequence(sequences, batch_first=True, padding_value=pad_token_id)
-        final_key = key.replace('congruent', 'con').replace('incongruent', 'incon')
+        # --- KEY CHANGE: Use full, consistent names ---
+        final_key = key
+        # --- End of Change ---
         collated_batch[f'{final_key}_input_ids'] = padded_sequences
         del collated_batch[f'_{key}_tokens']
 
@@ -184,7 +162,6 @@ def create_priming_dataloader(
     logger.info(f"Creating priming dataloader for: {csv_path_obj.name}")
     logger.info(f"Params: batch_size={batch_size}, max_samples={max_samples}, seed={seed}")
 
-    # This now uses the new, flexible loading function
     processed_data = load_and_process_priming_data(csv_path=csv_path_obj)
 
     if not processed_data:
