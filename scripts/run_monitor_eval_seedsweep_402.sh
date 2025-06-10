@@ -118,7 +118,7 @@ for CURRENT_SEED in {1..10}; do
             ${WATCH_MODE_ARG} \
             \
             --run_priming_eval \
-            --priming_eval_dir_path "/eval/just_shota" \
+            --priming_eval_dir_path "/eval/priming-corpuses_no_null" \
             \
             --base_model_name "gpt2" \
             --model_class_name "GPT2LMHeadModel" \
@@ -135,8 +135,8 @@ for CURRENT_SEED in {1..10}; do
             ${NEPTUNE_PROJECT_ARG} \
             --neptune_tags ${NEPTUNE_TAGS_FOR_MONITOR} \
             --neptune_training_run_name "${CONCEPTUAL_TRAINING_RUN_NAME}" \
-            --run_standard_eval \
-            --validation_dataset_path "/data/processed/test_set_10m"
+            #--run_standard_eval \
+            #--validation_dataset_path "/data/processed/test_set_10m"
 
     echo "--- Finished processing for Seed ${CURRENT_SEED} at $(date) ---"
 done
