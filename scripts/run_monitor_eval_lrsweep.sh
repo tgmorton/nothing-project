@@ -43,6 +43,7 @@ echo "GPUs: $CUDA_VISIBLE_DEVICES"
 
 # --- Load necessary system modules ---
 echo "Loading system modules..."
+source /etc/profile.d/modules.sh # Or the correct path for your system
 module load singularity/4.1.1 cuda/11.8 # <<< MODIFY versions if needed
 
 # --- Securely Load Neptune Credentials ---
