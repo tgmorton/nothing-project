@@ -105,7 +105,7 @@ echo "Starting Python evaluation_monitor.py script inside Singularity container.
 # --- Define paths relative to container mount points ---
 CONTAINER_MONITOR_SCRIPT_PATH="${CONTAINER_WORKSPACE}/src/evaluation_monitor.py" # Path to evaluation_monitor.py
 CONTAINER_VALID_DATA_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m" # For standard eval
-CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/just_shota" # For priming eval
+CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/priming_simple_no_null" # For priming eval
 
 # --- Define Neptune args ---
 NEPTUNE_PROJECT_ARG=""
@@ -151,7 +151,7 @@ singularity exec --nv \
         --per_device_eval_batch_size 8 \
         --priming_per_device_eval_batch_size 8 \
         --eval_max_samples 5000 \
-        --priming_eval_max_samples_per_file 1000 \
+        --priming_eval_max_samples_per_file 100 \
         \
         --use_amp \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
