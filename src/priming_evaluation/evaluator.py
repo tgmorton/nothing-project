@@ -1,11 +1,11 @@
-# src/priming_evaluation/evaluator.py (Revised SEM Calculation & Return Raw Data)
+# src/priming_evaluation/evaluator.py (Revised to calculate PE, Normalized Probs, and Baseline)
 
 import logging
-import math # Keep math for isfinite checks
+import math
 from collections import defaultdict
-from typing import Any, Dict, List, Tuple, Union # Added Tuple
+from typing import Any, Dict, List, Tuple
 
-import numpy as np # Import numpy for sqrt
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -14,203 +14,176 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 
 logger = logging.getLogger(__name__)
 
-# Define the structure for individual item results
-ResultItem = Dict[str, float] # {'pe': float, 'logp_con': float, 'logp_incon': float}
-# Define the return type for the batch calculation function
-BatchResults = Dict[str, List[ResultItem]]
-# Define the return type for the main eval function
-# Returns (Aggregated Metrics, Raw Item Results)
-EvalResults = Tuple[Dict[str, float], Dict[str, List[ResultItem]]]
+# --- NEW: Define more detailed result structures ---
+# Raw log-probabilities calculated for each item
+RawLogProbs = Dict[str, float]
 
-# --- calculate_priming_effect (No changes needed here) ---
-# (Keep the function as it was in the previous version with AMP context manager if added)
-def calculate_priming_effect(
-    model: PreTrainedModel,
-    batch: Dict[str, Any],
-    device: torch.device,
-    use_amp: bool = False # Optionally pass AMP flag if needed
+# A dictionary to hold lists of raw log-probs, keyed by target structure
+BatchResults = Dict[str, List[RawLogProbs]]
+
+# Final return type: (Aggregated Metrics, Raw Individual Item Metrics)
+FinalResultItem = Dict[str, float]
+EvalResults = Tuple[Dict[str, float], Dict[str, List[FinalResultItem]]]
+
+
+def calculate_full_metrics_for_batch(
+        model: PreTrainedModel,
+        batch: Dict[str, Any],
+        device: torch.device,
+        tokenizer: PreTrainedTokenizer,
+        use_amp: bool = False
 ) -> BatchResults:
     """
-    Calculates the Priming Effect (PE) and intermediate log probabilities
-    for a batch of data.
-    PE = log P(Target | CongruentPrime) - log P(Target | IncongruentPrime)
-    Uses corrected label indexing for log probability calculation.
-
-    Returns:
-        Dict[str, List[ResultItem]]: A dictionary where keys are target
-        structures and values are lists of dictionaries. Each inner
-        dictionary contains 'pe', 'logp_con', and 'logp_incon' for one item.
+    Calculates all required log-probabilities for a batch of data.
+    This includes P(Target|Prime) for all four combinations, plus baseline P(Target).
     """
-    # Move tensors to device
-    try:
-        congruent_input_ids = batch['congruent_input_ids'].to(device)
-        congruent_attention_mask = batch['congruent_attention_mask'].to(device)
-        incongruent_input_ids = batch['incongruent_input_ids'].to(device)
-        incongruent_attention_mask = batch['incongruent_attention_mask'].to(device)
-        labels = batch['labels'].to(device) # Padded target token IDs, -100 elsewhere
-        target_starts_con = batch['target_start_congruent'] # Tensor on CPU/Device
-        target_ends_con = batch['target_end_congruent']     # Tensor on CPU/Device
-        target_starts_incon = batch['target_start_incongruent'] # Tensor on CPU/Device
-        target_ends_incon = batch['target_end_incongruent']   # Tensor on CPU/Device
-        target_structures = batch['target_structure'] # List of strings
-        # Convert indices to tensors on device if they aren't already (usually done by collate)
-        if isinstance(target_starts_con, list): target_starts_con = torch.tensor(target_starts_con, dtype=torch.long, device=device)
-        if isinstance(target_ends_con, list): target_ends_con = torch.tensor(target_ends_con, dtype=torch.long, device=device)
-        if isinstance(target_starts_incon, list): target_starts_incon = torch.tensor(target_starts_incon, dtype=torch.long, device=device)
-        if isinstance(target_ends_incon, list): target_ends_incon = torch.tensor(target_ends_incon, dtype=torch.long, device=device)
+    # This function now expects input_ids and masks for all four sentence parts,
+    # plus the standalone targets for baseline calculation.
+    # e.g., batch['congruent_prime_input_ids'], batch['congruent_target_input_ids'], etc.
 
-    except KeyError as e:
-        logger.error(f"Batch missing key: {e}. Cannot calculate PE metrics.")
+    # We will compute log-probabilities for 6 scenarios per item.
+    # To do this efficiently, we create one large mega-batch, run the model once,
+    # and then split the results.
+
+    try:
+        # --- NEW: Concatenate all inputs for a single mega-batch forward pass ---
+        # This assumes your dataloader prepares these tensors.
+        # Primes + Targets for contextualized probabilities
+        con_prime_con_target = torch.cat([batch['con_prime_input_ids'], batch['con_target_input_ids']], dim=1)
+        con_prime_incon_target = torch.cat([batch['con_prime_input_ids'], batch['incon_target_input_ids']], dim=1)
+        incon_prime_con_target = torch.cat([batch['incon_prime_input_ids'], batch['con_target_input_ids']], dim=1)
+        incon_prime_incon_target = torch.cat([batch['incon_prime_input_ids'], batch['incon_target_input_ids']], dim=1)
+
+        # Standalone targets for baseline probabilities
+        # Add BOS token to the beginning of standalone targets for proper probability calculation
+        bos_tensor = torch.tensor([[tokenizer.bos_token_id]], device=device).expand(
+            batch['con_target_input_ids'].size(0), -1)
+        base_con_target = torch.cat([bos_tensor, batch['con_target_input_ids']], dim=1)
+        base_incon_target = torch.cat([bos_tensor, batch['incon_target_input_ids']], dim=1)
+
+        # Combine all 6 into a single tensor for one forward pass
+        all_input_ids = torch.cat([
+            con_prime_con_target, con_prime_incon_target,
+            incon_prime_con_target, incon_prime_incon_target,
+            base_con_target, base_incon_target
+        ], dim=0).to(device)
+
+        # Create corresponding attention masks
+        all_attention_mask = (all_input_ids != tokenizer.pad_token_id).long()
+
+    except (KeyError, AttributeError) as e:
+        logger.error(
+            f"Batch missing a required key or attribute (e.g., 'con_prime_input_ids'): {e}. Check your dataloader.")
         return {}
     except Exception as e:
-        logger.error(f"Error moving/preparing batch for device {device}: {e}")
+        logger.error(f"Error preparing mega-batch for device {device}: {e}")
         return {}
 
-    batch_size = congruent_input_ids.size(0)
-    batch_results: BatchResults = defaultdict(list)
-    nan_result: ResultItem = {'pe': float('nan'), 'logp_con': float('nan'), 'logp_incon': float('nan')}
+    # Get batch size from one of the original tensors
+    original_batch_size = batch['con_prime_input_ids'].size(0)
 
-    # Perform forward passes WITH AUTOCAST
+    # Perform a single forward pass on the combined batch
     try:
-        amp_enabled = use_amp and device.type == 'cuda' # Enable AMP only if requested AND on CUDA
+        amp_enabled = use_amp and device.type == 'cuda'
         with torch.no_grad():
             with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
-                outputs_con = model(input_ids=congruent_input_ids, attention_mask=congruent_attention_mask)
-                logits_con = outputs_con.logits # (batch, seq_len_con, vocab)
-                outputs_incon = model(input_ids=incongruent_input_ids, attention_mask=incongruent_attention_mask)
-                logits_incon = outputs_incon.logits # (batch, seq_len_incon, vocab)
-        # Optionally cast logits if needed, usually fine
-        # logits_con = logits_con.float()
-        # logits_incon = logits_incon.float()
+                outputs = model(input_ids=all_input_ids, attention_mask=all_attention_mask)
+                logits = outputs.logits
     except Exception as e:
-        logger.error(f"Model forward pass error (AMP enabled: {amp_enabled}): {e}", exc_info=True)
-        # Return empty dict indicating failure for this batch
-        # The caller should handle potential empty dicts
+        logger.error(f"Model forward pass error on mega-batch (AMP enabled: {amp_enabled}): {e}", exc_info=True)
         return {}
 
+    # Create labels by shifting inputs, ignoring padding
+    labels = all_input_ids.clone()
+    labels[labels == tokenizer.pad_token_id] = -100
 
-    # Calculate log probabilities and PE for each item in the batch
-    for i in range(batch_size):
-        target_structure = target_structures[i]
-        log_prob_con_val = float('nan')
-        log_prob_incon_val = float('nan')
-        priming_effect = float('nan')
+    # Split the logits and labels back into 6 parts
+    logits_list = torch.chunk(logits, 6, dim=0)
+    labels_list = torch.chunk(labels, 6, dim=0)
 
-        try:
-            start_con = target_starts_con[i].item()
-            end_con = target_ends_con[i].item()
-            start_incon = target_starts_incon[i].item()
-            end_incon = target_ends_incon[i].item()
+    # Define slices for calculating target log-probabilities
+    # These indices refer to the position *within the concatenated sequence*
+    # This requires your dataloader to provide these start indices.
+    # Example: 'con_target_start_in_con_prime_con_target_seq'
+    target_starts = [
+        batch['con_target_start_in_con_prime_context'], batch['incon_target_start_in_con_prime_context'],
+        batch['con_target_start_in_incon_prime_context'], batch['incon_target_start_in_incon_prime_context'],
+        1, 1  # For baseline targets, the target starts at index 1 (after BOS)
+    ]
 
-            # Ensure indices are valid *before* slicing
-            len_con = logits_con.shape[1]
-            len_incon = logits_incon.shape[1]
-            label_len = labels.shape[1]
+    log_prob_keys = [
+        'logp_conT_conP', 'logp_inconT_conP',
+        'logp_conT_inconP', 'logp_inconT_inconP',
+        'logp_conT_base', 'logp_inconT_base'
+    ]
 
-            # Check indices are within bounds (adjust for 0-based indexing vs 1-based in description?)
-            # Assuming indices are 1-based, need to adjust for slicing
-            # target_starts point to the *first* token of the target
-            # target_ends point to the *last* token of the target
-            # Logits correspond to prediction for *next* token, so we need logits[start-1 : end] to predict labels[start : end+1]
-            # Let's stick to the original logic: logits for position t predict token t+1
-            # So, logits[start-1:end-1] predict labels[start:end]
+    # Calculate log-probabilities for each of the 6 scenarios
+    log_probs_per_item = [defaultdict(float) for _ in range(original_batch_size)]
 
-            valid_con_indices = 0 <= start_con - 1 < end_con - 1 < len_con and start_con < end_con <= label_len
-            valid_incon_indices = 0 <= start_incon - 1 < end_incon - 1 < len_incon and start_incon < end_incon <= label_len
+    for k, (key, logit_tensor, label_tensor, start_indices) in enumerate(
+            zip(log_prob_keys, logits_list, labels_list, target_starts)):
+        vocab_size = logit_tensor.size(-1)
+        for i in range(original_batch_size):
+            try:
+                # The logits needed are from one position before the target starts, up to one before the end
+                target_start_idx = start_indices[i].item()
+                # Find the end of the sequence (first -100 label after start)
+                item_labels = label_tensor[i, target_start_idx:]
+                non_padding_len = (item_labels != -100).sum().item()
 
-            if not valid_con_indices or not valid_incon_indices:
-                 logger.warning(
-                     f"Index out of bounds for item {i}, target {target_structure}. "
-                     f"Con: ({start_con}, {end_con}) vs LogitLen={len_con}, LabelLen={label_len}. "
-                     f"Incon: ({start_incon}, {end_incon}) vs LogitLen={len_incon}, LabelLen={label_len}. Skipping."
-                 )
-                 batch_results[target_structure].append(nan_result)
-                 continue
+                if non_padding_len == 0:
+                    logger.warning(f"Item {i} has zero-length target for '{key}'. Skipping.")
+                    log_probs_per_item[i][key] = float('nan')
+                    continue
 
-            logits_for_target_con = logits_con[i, start_con-1 : end_con-1, :]
-            logits_for_target_incon = logits_incon[i, start_incon-1 : end_incon-1, :]
-            target_labels = labels[i, start_con : end_con] # Target tokens to be predicted
+                target_end_idx = target_start_idx + non_padding_len
 
-            # Validate shapes after slicing
-            if logits_for_target_con.shape[0] != target_labels.shape[0] or \
-               logits_for_target_incon.shape[0] != target_labels.shape[0] or \
-               target_labels.shape[0] == 0: # Also check for zero length target
-                if target_labels.shape[0] == 0:
-                    logger.warning(f"Zero length target sequence for item {i}, target {target_structure}. Indices: ({start_con}:{end_con}). Skipping.")
-                else:
-                    logger.warning(f"Logit/Label length mismatch for item {i}, target {target_structure}. "
-                                f"LogitCon:{logits_for_target_con.shape[0]}, LogitIncon:{logits_for_target_incon.shape[0]}, Label:{target_labels.shape[0]}. "
-                                f"Indices: Con({start_con}:{end_con}), Incon({start_incon}:{end_incon}). Skipping.")
-                batch_results[target_structure].append(nan_result)
-                continue
+                logits_for_target = logit_tensor[i, target_start_idx - 1: target_end_idx - 1, :]
+                labels_for_target = label_tensor[i, target_start_idx: target_end_idx]
 
-            vocab_size = logits_for_target_con.size(-1)
-            # Filter out ignored labels (-100) before calculating loss if needed, but CE handles it
-            # Use .view instead of reshape for potential memory efficiency
-            log_prob_con_tensor = -F.cross_entropy(
-                logits_for_target_con.view(-1, vocab_size),
-                target_labels.view(-1),
-                ignore_index=-100,
-                reduction='sum' # Summing log probs across target tokens
-            )
-            log_prob_incon_tensor = -F.cross_entropy(
-                logits_for_target_incon.view(-1, vocab_size),
-                target_labels.view(-1),
-                ignore_index=-100,
-                reduction='sum' # Summing log probs across target tokens
-            )
+                # Ensure shapes match
+                if logits_for_target.shape[0] != labels_for_target.shape[0]:
+                    raise ValueError("Logit and label shapes do not match after slicing.")
 
-            log_prob_con_val = log_prob_con_tensor.item()
-            log_prob_incon_val = log_prob_incon_tensor.item()
+                log_prob_tensor = -F.cross_entropy(
+                    logits_for_target.view(-1, vocab_size),
+                    labels_for_target.view(-1),
+                    ignore_index=-100,
+                    reduction='sum'
+                )
+                log_probs_per_item[i][key] = log_prob_tensor.item()
 
-            if math.isfinite(log_prob_con_val) and math.isfinite(log_prob_incon_val):
-                priming_effect = log_prob_con_val - log_prob_incon_val
-            else:
-                priming_effect = float('nan')
+            except Exception as e:
+                logger.error(f"Error calculating log-prob for item {i}, key '{key}': {e}", exc_info=True)
+                log_probs_per_item[i][key] = float('nan')
 
-            current_result: ResultItem = {
-                'pe': priming_effect,
-                'logp_con': log_prob_con_val,
-                'logp_incon': log_prob_incon_val
-            }
-
-            # Check again before adding to results
-            if not math.isfinite(priming_effect) or not math.isfinite(log_prob_con_val) or not math.isfinite(log_prob_incon_val):
-                 logger.warning(f"Non-finite PE/LogP calculated: item {i}, target {target_structure}. PE={priming_effect}, LogP_con={log_prob_con_val}, LogP_incon={log_prob_incon_val}. Storing NaNs.")
-                 batch_results[target_structure].append(nan_result) # Store consistent NaN result
-            else:
-                 batch_results[target_structure].append(current_result)
-
-        except IndexError as e:
-            logger.error(f"IndexError processing metrics for item {i}, target {target_structure}. Err:{e}")
-            batch_results[target_structure].append(nan_result)
-        except Exception as e:
-            logger.error(f"Unexpected error processing metrics for item {i}, target {target_structure}: {e}", exc_info=True)
-            batch_results[target_structure].append(nan_result)
+    # Organize results by target structure from the original batch
+    batch_results: BatchResults = defaultdict(list)
+    target_structures = batch.get('target_structure', ['default_structure'] * original_batch_size)
+    for i in range(original_batch_size):
+        batch_results[target_structures[i]].append(log_probs_per_item[i])
 
     return dict(batch_results)
 
 
-# --- run_native_priming_eval (MODIFIED FOR SEM and RETURNING RAW DATA) ---
 def run_native_priming_eval(
-    model: PreTrainedModel, priming_dataloader: DataLoader, device: torch.device,
-    tokenizer: PreTrainedTokenizer, # Keep tokenizer for potential debugging
-    use_amp: bool = False # Pass AMP flag from args if available
-) -> EvalResults: # <<< MODIFIED Return Type
+        model: PreTrainedModel, priming_dataloader: DataLoader, device: torch.device,
+        tokenizer: PreTrainedTokenizer,
+        use_amp: bool = False
+) -> EvalResults:
     """
-    Runs the full native priming evaluation loop, calculating Priming Effect (PE),
-    congruent log probability (LogP_con), and incongruent log probability (LogP_incon).
-    Returns:
-        Tuple[Dict[str, float], Dict[str, List[ResultItem]]]:
-            - Aggregated metrics (avg, std, sem for PE; avg, std for LogPs per structure).
-            - Raw per-item results (list of ResultItem dicts per structure).
+    Runs the full native priming evaluation loop.
+
+    NOW CALCULATES:
+    1. Priming Effect (PE) via log-prob subtraction ("Sinclair" method).
+    2. Normalized Probabilities (Paper's method).
+    3. Prime-less Baseline Preference.
     """
-    logger.info("Starting native priming evaluation (PE, LogP_con, LogP_incon Metrics)...")
+    logger.info("Starting expanded native priming evaluation...")
     original_mode = model.training
     model.eval()
 
-    # This dict will store the raw results for every item
-    all_results_raw: Dict[str, List[ResultItem]] = defaultdict(list)
+    all_raw_log_probs: Dict[str, List[RawLogProbs]] = defaultdict(list)
 
     progress_bar = tqdm(priming_dataloader, desc="Priming Eval", leave=False)
     for batch in progress_bar:
@@ -218,84 +191,83 @@ def run_native_priming_eval(
             logger.warning("Skipping empty batch from collate function.")
             continue
         try:
-            # Pass use_amp flag to the calculation function
-            batch_metrics_raw: BatchResults = calculate_priming_effect(model, batch, device, use_amp=use_amp)
+            batch_metrics_raw = calculate_full_metrics_for_batch(model, batch, device, tokenizer, use_amp=use_amp)
             for target_structure, result_list in batch_metrics_raw.items():
-                # Extend the raw results list
-                all_results_raw[target_structure].extend(result_list)
+                all_raw_log_probs[target_structure].extend(result_list)
         except Exception as e:
             logger.error(f"Error processing priming batch: {e}", exc_info=True)
 
-    # --- Calculate Final Aggregate Metrics ---
-    final_aggregated_metrics: Dict[str, float] = {}
-    logger.info("Calculating final priming metric aggregates:")
+    # --- NEW: Calculate all final metrics from the collected raw log-probs ---
+    final_aggregated_metrics = {}
+    final_raw_item_metrics: Dict[str, List[FinalResultItem]] = defaultdict(list)
 
-    # Iterate through the collected raw results to calculate aggregates
-    for target_structure, structure_results_list in all_results_raw.items():
-        # Extract finite values for each metric separately
-        # Ensure item is a dict and key exists before checking isfinite
-        finite_pe_values = [r['pe'] for r in structure_results_list if isinstance(r, dict) and 'pe' in r and math.isfinite(r['pe'])]
-        finite_logp_con_values = [r['logp_con'] for r in structure_results_list if isinstance(r, dict) and 'logp_con' in r and math.isfinite(r['logp_con'])]
-        finite_logp_incon_values = [r['logp_incon'] for r in structure_results_list if isinstance(r, dict) and 'logp_incon' in r and math.isfinite(r['logp_incon'])]
+    for structure, results_list in all_raw_log_probs.items():
+        pe_scores = []
+        norm_p_con_target_given_con_prime = []
+        norm_p_con_target_given_incon_prime = []
+        baseline_prefs_for_con_target = []
 
-        total_items = len(structure_results_list)
-        logger.info(f"  Target '{target_structure}' (Total Items Processed: {total_items}):") # Clarified log
+        for raw_probs in results_list:
+            item_metrics = {}
 
-        # --- Calculate and store metrics for PE (Avg, Std, SEM) ---
-        if finite_pe_values:
-            count_pe = len(finite_pe_values)
-            mean_pe = np.mean(finite_pe_values)
-            std_pe = np.std(finite_pe_values)
-            sem_pe = float('nan') # Default to NaN
-            if count_pe > 0:
-                sem_pe = std_pe / np.sqrt(count_pe)
+            # Use nan-safe retrieval
+            logp_ct_cp = raw_probs.get('logp_conT_conP', float('nan'))
+            logp_it_cp = raw_probs.get('logp_inconT_conP', float('nan'))
+            logp_ct_ip = raw_probs.get('logp_conT_inconP', float('nan'))
+            logp_it_ip = raw_probs.get('logp_inconT_inconP', float('nan'))
+            logp_ct_base = raw_probs.get('logp_conT_base', float('nan'))
+            logp_it_base = raw_probs.get('logp_inconT_base', float('nan'))
 
-            final_aggregated_metrics[f"avg_PE_{target_structure}"] = mean_pe
-            final_aggregated_metrics[f"std_PE_{target_structure}"] = std_pe
-            final_aggregated_metrics[f"sem_PE_{target_structure}"] = sem_pe # Store SEM
-            final_aggregated_metrics[f"count_PE_{target_structure}"] = count_pe
-            logger.info(f"    PE       : Avg = {mean_pe:.4f} (Std = {std_pe:.4f}, SEM = {sem_pe:.4f}, N = {count_pe})")
-        else:
-            final_aggregated_metrics[f"avg_PE_{target_structure}"] = float('nan')
-            final_aggregated_metrics[f"std_PE_{target_structure}"] = float('nan')
-            final_aggregated_metrics[f"sem_PE_{target_structure}"] = float('nan') # Store NaN SEM
-            final_aggregated_metrics[f"count_PE_{target_structure}"] = 0
-            logger.warning(f"    PE       : No finite values found.")
+            # --- 1. Calculate Priming Effect (PE) Score ---
+            if math.isfinite(logp_ct_cp) and math.isfinite(logp_ct_ip):
+                pe = logp_ct_cp - logp_ct_ip
+                pe_scores.append(pe)
+                item_metrics['pe_sinclair'] = pe
 
-        # --- Calculate and store metrics for LogP Congruent (Avg, Std) ---
-        if finite_logp_con_values:
-            count_logp_con = len(finite_logp_con_values)
-            mean_logp_con = np.mean(finite_logp_con_values)
-            std_logp_con = np.std(finite_logp_con_values)
-            final_aggregated_metrics[f"avg_LogP_con_{target_structure}"] = mean_logp_con
-            final_aggregated_metrics[f"std_LogP_con_{target_structure}"] = std_logp_con
-            final_aggregated_metrics[f"count_LogP_con_{target_structure}"] = count_logp_con
-            logger.info(f"    LogP_con : Avg = {mean_logp_con:.4f} (Std = {std_logp_con:.4f}, N = {count_logp_con})")
-        else:
-            final_aggregated_metrics[f"avg_LogP_con_{target_structure}"] = float('nan')
-            final_aggregated_metrics[f"std_LogP_con_{target_structure}"] = float('nan')
-            final_aggregated_metrics[f"count_LogP_con_{target_structure}"] = 0
-            logger.warning(f"    LogP_con : No finite values found.")
+            # --- 2. Calculate Normalized Probabilities ---
+            p_ct_cp = math.exp(logp_ct_cp) if math.isfinite(logp_ct_cp) else 0
+            p_it_cp = math.exp(logp_it_cp) if math.isfinite(logp_it_cp) else 0
+            if p_ct_cp + p_it_cp > 0:
+                norm_p = p_ct_cp / (p_ct_cp + p_it_cp)
+                norm_p_con_target_given_con_prime.append(norm_p)
+                item_metrics['norm_p_conT_given_conP'] = norm_p
 
-        # --- Calculate and store metrics for LogP Incongruent (Avg, Std) ---
-        if finite_logp_incon_values:
-            count_logp_incon = len(finite_logp_incon_values)
-            mean_logp_incon = np.mean(finite_logp_incon_values)
-            std_logp_incon = np.std(finite_logp_incon_values)
-            final_aggregated_metrics[f"avg_LogP_incon_{target_structure}"] = mean_logp_incon
-            final_aggregated_metrics[f"std_LogP_incon_{target_structure}"] = std_logp_incon
-            final_aggregated_metrics[f"count_LogP_incon_{target_structure}"] = count_logp_incon
-            logger.info(f"    LogP_incon: Avg = {mean_logp_incon:.4f} (Std = {std_logp_incon:.4f}, N = {count_logp_incon})")
-        else:
-            final_aggregated_metrics[f"avg_LogP_incon_{target_structure}"] = float('nan')
-            final_aggregated_metrics[f"std_LogP_incon_{target_structure}"] = float('nan')
-            final_aggregated_metrics[f"count_LogP_incon_{target_structure}"] = 0
-            logger.warning(f"    LogP_incon: No finite values found.")
+            p_ct_ip = math.exp(logp_ct_ip) if math.isfinite(logp_ct_ip) else 0
+            p_it_ip = math.exp(logp_it_ip) if math.isfinite(logp_it_ip) else 0
+            if p_ct_ip + p_it_ip > 0:
+                norm_p = p_ct_ip / (p_ct_ip + p_it_ip)
+                norm_p_con_target_given_incon_prime.append(norm_p)
+                item_metrics['norm_p_conT_given_inconP'] = norm_p
 
-    # Restore model mode
+            # --- 3. Calculate Baseline Preference ---
+            p_ct_base = math.exp(logp_ct_base) if math.isfinite(logp_ct_base) else 0
+            p_it_base = math.exp(logp_it_base) if math.isfinite(logp_it_base) else 0
+            if p_ct_base + p_it_base > 0:
+                baseline_pref = p_ct_base / (p_ct_base + p_it_base)
+                baseline_prefs_for_con_target.append(baseline_pref)
+                item_metrics['baseline_pref_for_conT'] = baseline_pref
+
+            final_raw_item_metrics[structure].append(item_metrics)
+
+        # --- Aggregate and store all metrics ---
+        # PE ("Sinclair") metrics
+        final_aggregated_metrics[f'avg_pe_sinclair_{structure}'] = np.mean(pe_scores) if pe_scores else float('nan')
+        final_aggregated_metrics[f'std_pe_sinclair_{structure}'] = np.std(pe_scores) if pe_scores else float('nan')
+
+        # Normalized Probability metrics
+        final_aggregated_metrics[f'avg_norm_p_conT_given_conP_{structure}'] = np.mean(
+            norm_p_con_target_given_con_prime) if norm_p_con_target_given_con_prime else float('nan')
+        final_aggregated_metrics[f'avg_norm_p_conT_given_inconP_{structure}'] = np.mean(
+            norm_p_con_target_given_incon_prime) if norm_p_con_target_given_incon_prime else float('nan')
+
+        # Baseline Preference metric
+        final_aggregated_metrics[f'avg_baseline_pref_for_conT_{structure}'] = np.mean(
+            baseline_prefs_for_con_target) if baseline_prefs_for_con_target else float('nan')
+        final_aggregated_metrics[f'count_{structure}'] = len(results_list)
+
     if original_mode:
         model.train()
-    logger.info("Native priming evaluation finished.")
+    logger.info("Expanded native priming evaluation finished.")
 
-    # <<< MODIFIED: Return both aggregated and raw results
-    return final_aggregated_metrics, dict(all_results_raw)
+    # Return both the summary aggregates and the raw per-item calculated metrics
+    return final_aggregated_metrics, dict(final_raw_item_metrics)
