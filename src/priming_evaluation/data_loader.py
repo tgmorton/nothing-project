@@ -1,9 +1,9 @@
-# src/priming_evaluation/data_loader.py (Revised for the new evaluator)
+# src/priming_evaluation/data_loader.py (Revised again for dynamic column handling)
 
 import logging
 from collections import defaultdict
 from functools import partial
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 import random
 
@@ -14,6 +14,27 @@ from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from transformers import PreTrainedTokenizer
 
 logger = logging.getLogger(__name__)
+
+
+# --- NEW: Helper function to find the structures from column names ---
+def get_structure_alternations(columns: List[str]) -> Optional[Tuple[str, str]]:
+    """
+    Identifies the two grammatical structures from a list of column names.
+    e.g., from ['pthat', 'pnull', 'tthat', 'tnull'], it returns ('null', 'that').
+    """
+    structures = set()
+    for col in columns:
+        if col.startswith('p') or col.startswith('t'):
+            # Strip the 'p' or 't' prefix to get the structure name
+            structure_name = col[1:]
+            if structure_name:  # Ensure it's not an empty string
+                structures.add(structure_name)
+
+    if len(structures) == 2:
+        return tuple(sorted(list(structures)))  # Return in a consistent order
+    else:
+        logger.warning(f"Could not determine exactly two structures. Found: {structures} from columns: {columns}")
+        return None
 
 
 class PrimingEvaluationDataset(Dataset):
@@ -35,9 +56,9 @@ def load_and_process_priming_data(
         csv_path: Path,
 ) -> List[Dict[str, Any]]:
     """
-    Loads priming data from a CSV.
-    Assumes each row contains the four necessary sentence components.
-    e.g., columns 'congruent_prime', 'incongruent_prime', 'congruent_target', 'incongruent_target'
+    REVISED: Loads priming data from a CSV with dynamic column names.
+    It auto-detects the alternation (e.g., 'that'/'null') and maps columns
+    like 'pthat', 'tnull' to the generic 'congruent_prime', 'incongruent_target' keys.
     """
     processed_data = []
     csv_filename = csv_path.name
@@ -48,29 +69,53 @@ def load_and_process_priming_data(
         logger.error(f"Error loading or processing CSV {csv_filename}: {e}");
         return []
 
-    # These are the required columns for the new evaluator
-    required_cols = ['congruent_prime', 'incongruent_prime', 'congruent_target', 'incongruent_target']
+    # Dynamically determine the structures (e.g., 'null', 'that') from the columns
+    alternation = get_structure_alternations(list(df.columns))
+    if alternation is None:
+        logger.error(
+            f"Could not process {csv_filename}. Ensure it has columns like 'p<struct1>', 't<struct1>', 'p<struct2>', 't<struct2>'.")
+        return []
+
+    struct1, struct2 = alternation
+    logger.info(f"Detected alternation for {csv_filename}: '{struct1}' vs '{struct2}'")
+
+    # Construct the actual column names based on detected structures
+    p_col1, p_col2 = f'p{struct1}', f'p{struct2}'
+    t_col1, t_col2 = f't{struct1}', f't{struct2}'
+    required_cols = [p_col1, p_col2, t_col1, t_col2]
+
     if not all(col in df.columns for col in required_cols):
         missing = [col for col in required_cols if col not in df.columns]
-        logger.error(f"CSV {csv_filename} missing required columns for the new evaluator: {missing}")
+        logger.error(f"CSV {csv_filename} is missing constructed columns: {missing}")
         return []
 
     logger.info(f"Processing {len(df)} rows from {csv_filename}...")
     for index, row in df.iterrows():
-        item = {
-            'congruent_prime': str(row['congruent_prime']),
-            'incongruent_prime': str(row['incongruent_prime']),
-            'congruent_target': str(row['congruent_target']),
-            'incongruent_target': str(row['incongruent_target']),
-            'target_structure': str(row.get('target_structure', 'default')),  # Optional: for grouping results
-            'source_csv': csv_filename,
-            'csv_row': index
-        }
-        # Basic validation to skip empty/NaN rows
-        if all(item[key] and item[key].lower() != 'nan' for key in required_cols):
-            processed_data.append(item)
-        else:
-            logger.warning(f"Skipping row {index} in {csv_filename} due to empty or 'nan' value.")
+        try:
+            prime1, prime2 = str(row[p_col1]), str(row[p_col2])
+            target1, target2 = str(row[t_col1]), str(row[t_col2])
+
+            # Skip row if any of the cells are empty or 'nan'
+            if not all(s and s.lower() != 'nan' for s in [prime1, prime2, target1, target2]):
+                logger.warning(f"Skipping row {index} in {csv_filename} due to empty or 'nan' value.")
+                continue
+
+            # Create TWO items per row to test priming in both directions
+            # Item 1: struct1 is congruent
+            processed_data.append({
+                'congruent_prime': prime1, 'incongruent_prime': prime2,
+                'congruent_target': target1, 'incongruent_target': target2,
+                'target_structure': struct1, 'source_csv': csv_filename, 'csv_row': index
+            })
+            # Item 2: struct2 is congruent
+            processed_data.append({
+                'congruent_prime': prime2, 'incongruent_prime': prime1,
+                'congruent_target': target2, 'incongruent_target': target1,
+                'target_structure': struct2, 'source_csv': csv_filename, 'csv_row': index
+            })
+        except (KeyError, TypeError) as e:
+            logger.warning(f"Skipping row {index} in {csv_filename} due to error: {e}")
+            continue
 
     logger.info(f"Finished processing {csv_filename}. Created {len(processed_data)} valid items.")
     return processed_data
@@ -81,28 +126,22 @@ def collate_for_new_evaluator(
         tokenizer: PreTrainedTokenizer,
 ) -> Dict[str, Any]:
     """
-    NEW collate function.
-    Tokenizes each of the 4 sentence parts separately and prepares the batch
-    with the keys expected by the new evaluator script.
+    This collate function takes items with generic keys ('congruent_prime', etc.)
+    and prepares the tensors for the evaluator. This function does NOT need to change.
     """
     batch = [item for item in batch if item is not None]
     if not batch: return {}
 
     collated_batch = defaultdict(list)
 
-    # Keys for the four sentence parts
     sentence_keys = ['congruent_prime', 'incongruent_prime', 'congruent_target', 'incongruent_target']
 
-    # --- 1. Tokenize all sentence parts for each item in the batch ---
     for key in sentence_keys:
-        # Tokenize sentences without special tokens; the evaluator will handle them
         sentences = [item[key] for item in batch]
         tokenized_output = tokenizer(sentences, add_special_tokens=False)
-        # Store the raw token lists for length calculations
         collated_batch[f'_{key}_tokens'] = tokenized_output['input_ids']
 
-    # --- 2. Calculate target start indices ---
-    bos_offset = 1  # The new evaluator assumes a BOS token will be added
+    bos_offset = 1
     collated_batch['con_target_start_in_con_prime_context'] = [len(tokens) + bos_offset for tokens in
                                                                collated_batch['_congruent_prime_tokens']]
     collated_batch['incon_target_start_in_con_prime_context'] = [len(tokens) + bos_offset for tokens in
@@ -112,21 +151,16 @@ def collate_for_new_evaluator(
     collated_batch['incon_target_start_in_incon_prime_context'] = [len(tokens) + bos_offset for tokens in
                                                                    collated_batch['_incongruent_prime_tokens']]
 
-    # --- 3. Pad the token lists to create final tensors ---
     pad_token_id = tokenizer.pad_token_id
     for key in sentence_keys:
         sequences = [torch.tensor(tokens) for tokens in collated_batch[f'_{key}_tokens']]
         padded_sequences = pad_sequence(sequences, batch_first=True, padding_value=pad_token_id)
-        # Rename to the keys the evaluator expects
-        final_key = key.replace('_', 'T_') if 'target' in key else key.replace('_', 'P_')
+        final_key = key.replace('congruent', 'con').replace('incongruent', 'incon')
         collated_batch[f'{final_key}_input_ids'] = padded_sequences
-        # Clean up temporary token lists
         del collated_batch[f'_{key}_tokens']
 
-    # --- 4. Add other necessary metadata ---
     collated_batch['target_structure'] = [item['target_structure'] for item in batch]
 
-    # Convert index lists to tensors
     index_keys = [
         'con_target_start_in_con_prime_context', 'incon_target_start_in_con_prime_context',
         'con_target_start_in_incon_prime_context', 'incon_target_start_in_incon_prime_context'
@@ -150,13 +184,13 @@ def create_priming_dataloader(
     logger.info(f"Creating priming dataloader for: {csv_path_obj.name}")
     logger.info(f"Params: batch_size={batch_size}, max_samples={max_samples}, seed={seed}")
 
+    # This now uses the new, flexible loading function
     processed_data = load_and_process_priming_data(csv_path=csv_path_obj)
 
     if not processed_data:
         logger.warning(f"No data processed from {csv_path_obj.name}. Returning None for DataLoader.")
         return None
 
-    # Handle sampling
     if max_samples > 0 and len(processed_data) > max_samples:
         logger.info(f"Sampling {max_samples:,} items from {len(processed_data):,} (seed: {seed}).")
         random.seed(seed)
