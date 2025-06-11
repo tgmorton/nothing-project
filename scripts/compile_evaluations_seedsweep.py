@@ -163,9 +163,10 @@ def compile_evaluation_summaries(
 
                         for base_metric in base_metrics_present:
                             associated_labels = parsed_metrics.get(base_metric, {}).keys()
-                            t_labels = {lbl for lbl in associated_labels if lbl.lower().startswith('t')}
-                            if len(t_labels) == 2:
-                                label_list = sorted(list(t_labels))
+                            # The new logic assumes any two labels for a metric form a pair,
+                            # regardless of what letter they start with.
+                            if len(associated_labels) == 2:
+                                label_list = sorted(list(associated_labels))
                                 s1_label, s2_label = label_list[0], label_list[1]
                                 contrast_label = f"{s1_label}/{s2_label}"
                                 value1 = parsed_metrics[base_metric][s1_label]
