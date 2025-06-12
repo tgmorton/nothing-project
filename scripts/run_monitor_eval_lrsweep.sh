@@ -2,7 +2,8 @@
 
 # === SBATCH Directives ===
 #SBATCH --job-name=gpt2_eval_monitor_lrsweep
-#SBATCH --partition=general_gpu_a5000
+#SBATCH --partition=general_gpu_p6000
+#SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
