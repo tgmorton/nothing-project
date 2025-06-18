@@ -81,7 +81,6 @@ echo "Starting Python evaluation_monitor.py script inside Singularity container.
 
 # --- Define paths relative to container mount points ---
 CONTAINER_MONITOR_SCRIPT_PATH="${CONTAINER_WORKSPACE}/src/evaluation_monitor.py" # Path to evaluation_monitor.py
-CONTAINER_VALID_DATA_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m" # For standard eval
 CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/priming_simple_no_null" # For priming eval
 
 # --- Define Neptune args ---
@@ -108,6 +107,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 WATCH_MODE_ARG="" # Default: Run once and exit
 
 # --- Execute Singularity Command ---
+# Note the argument changes below to match evaluation_monitor.py
 singularity exec --nv \
     -B "${HOST_PROJECT_DIR}":"${CONTAINER_WORKSPACE}" \
     -B "${HOST_DATA_BASE_DIR}":"${CONTAINER_DATA_DIR}" \
@@ -116,32 +116,27 @@ singularity exec --nv \
     -B "${HOST_PRIMING_BASE_DIR}":"${CONTAINER_PRIMING_DIR}" \
     "${HOST_SIF_PATH}" \
     python3 "${CONTAINER_MONITOR_SCRIPT_PATH}" \
-        -model_parent_dir "${CONTAINER_TRAINED_MODEL_PARENT_DIR}" \
+        --model_parent_dir "${CONTAINER_TRAINED_MODEL_PARENT_DIR}" \
         --output_base_dir "${CONTAINER_EVAL_MONITOR_OUTPUT_BASE_DIR}" \
         ${WATCH_MODE_ARG} \
         \
         --run_priming_eval \
-        --priming_eval_dir_path "/eval/priming_simple_no_null" \
+        --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
         \
         --base_model_name "gpt2" \
         --model_class_name "GPT2LMHeadModel" \
         --per_device_eval_batch_size 8 \
         --priming_per_device_eval_batch_size 8 \
         --eval_max_samples 5000 \
-        --priming_eval_max_samples_per_file 100 \
+        --priming_eval_max_samples_per_file 1000 \
         \
         --use_amp \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
         --seed 42 \
-        --no_skip_processed_checkpoints \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_tags ${NEPTUNE_TAGS_FOR_MONITOR} \
-        --neptune_training_run_name "${CONCEPTUAL_TRAINING_RUN_NAME}" \
-        #--run_standard_eval \
-        #--validation_dataset_path "${CONTAINER_VALID_DATA_PATH}" \
-        # OR if you used the other flag in evaluate.py's parser:
-        # --verbose_eval_logging # <<< USE THIS INSTEAD IF IMPLEMENTED
+        --neptune_training_run_name "${CONCEPTUAL_TRAINING_RUN_NAME}"
 
 # === Job Completion ===
 echo "=== Job Finished: $(date) ==="
