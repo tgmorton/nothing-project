@@ -49,9 +49,9 @@ HOST_PROJECT_DIR="/home/AD/thmorton/nothing-project"
 HOST_SIF_PATH="/home/AD/thmorton/nothing-project/python39_llm_env.sif" # Ensure evaluation_monitor.py is in here
 HOST_DATA_BASE_DIR="${HOST_PROJECT_DIR}/data"
 # This is now the PARENT directory where previously trained model checkpoints reside
-HOST_TRAINED_MODEL_PARENT_DIR="${HOST_PROJECT_DIR}/models/100M_s43_model" # <--- POINT THIS TO YOUR ACTUAL TRAINED MODEL OUTPUT DIR
+HOST_TRAINED_MODEL_PARENT_DIR="${HOST_PROJECT_DIR}/models/100M_orig_model" # <--- POINT THIS TO YOUR ACTUAL TRAINED MODEL OUTPUT DIR
 # This will be the base output directory for the evaluation monitor itself and its orchestrated evaluations
-HOST_EVAL_MONITOR_OUTPUT_BASE_DIR="${HOST_PROJECT_DIR}/models/100M_s43_modelk/eval"
+HOST_EVAL_MONITOR_OUTPUT_BASE_DIR="${HOST_PROJECT_DIR}/models/100M_orig_model/eval"
 
 HOST_PRIMING_BASE_DIR="${HOST_PROJECT_DIR}/eval"
 
