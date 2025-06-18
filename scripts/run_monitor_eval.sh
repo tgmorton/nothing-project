@@ -116,29 +116,28 @@ singularity exec --nv \
     -B "${HOST_PRIMING_BASE_DIR}":"${CONTAINER_PRIMING_DIR}" \
     "${HOST_SIF_PATH}" \
     python3 "${CONTAINER_MONITOR_SCRIPT_PATH}" \
-        --model_parent_dir "${CONTAINER_TRAINED_MODEL_PARENT_DIR}" \
+        -model_parent_dir "${CONTAINER_TRAINED_MODEL_PARENT_DIR}" \
         --output_base_dir "${CONTAINER_EVAL_MONITOR_OUTPUT_BASE_DIR}" \
         ${WATCH_MODE_ARG} \
         \
         --run_priming_eval \
-        --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
+        --priming_eval_dir_path "/eval/priming_simple_no_null" \
         \
         --base_model_name "gpt2" \
         --model_class_name "GPT2LMHeadModel" \
         --per_device_eval_batch_size 8 \
         --priming_per_device_eval_batch_size 8 \
         --eval_max_samples 5000 \
-        --priming_eval_max_samples_per_file 1000 \
-        --priming_max_seq_length 512 \
+        --priming_eval_max_samples_per_file 100 \
         \
         --use_amp \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
         --seed 42 \
+        --no_skip_processed_checkpoints \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_tags ${NEPTUNE_TAGS_FOR_MONITOR} \
         --neptune_training_run_name "${CONCEPTUAL_TRAINING_RUN_NAME}" \
-        --log_level DEBUG \
         #--run_standard_eval \
         #--validation_dataset_path "${CONTAINER_VALID_DATA_PATH}" \
         # OR if you used the other flag in evaluate.py's parser:
