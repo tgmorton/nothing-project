@@ -111,7 +111,7 @@ singularity exec --nv \
         --priming_eval_dir_path "${CONTAINER_PRIMING_PATH}" \
         --output_dir "${CONTAINER_RUN_OUTPUT_DIR}" \
         \
-        --num_train_epochs 20 \
+        --num_train_epochs 2 \
         --per_device_train_batch_size 8 \
         --gradient_accumulation_steps 16 \
         \
@@ -134,11 +134,11 @@ singularity exec --nv \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_run_name "${NEPTUNE_RUN_NAME}" \
         --neptune_tags ${NEPTUNE_TAGS} \
-        \
-        --local_eval \
-        --evaluate_script_path "${CONTAINER_EVAL_SCRIPT_PATH}" \
-        --trigger_standard_eval \
-        --trigger_priming_eval
+        #\
+#        --local_eval \
+#        --evaluate_script_path "${CONTAINER_EVAL_SCRIPT_PATH}" \
+#        --trigger_standard_eval \
+#        --trigger_priming_eval
 
 # === Job Completion ===
 echo "=== Job Finished: $(date) ==="
