@@ -49,9 +49,9 @@ HOST_PROJECT_DIR="/home/AD/thmorton/nothing-project"
 HOST_SIF_PATH="/home/AD/thmorton/nothing-project/python39_llm_env.sif" # Ensure evaluation_monitor.py is in here
 HOST_DATA_BASE_DIR="${HOST_PROJECT_DIR}/data"
 # This is now the PARENT directory where previously trained model checkpoints reside
-HOST_TRAINED_MODEL_PARENT_DIR="${HOST_PROJECT_DIR}/models/May14_bak" # <--- POINT THIS TO YOUR ACTUAL TRAINED MODEL OUTPUT DIR
+HOST_TRAINED_MODEL_PARENT_DIR="${HOST_PROJECT_DIR}/models/100M_s43_model" # <--- POINT THIS TO YOUR ACTUAL TRAINED MODEL OUTPUT DIR
 # This will be the base output directory for the evaluation monitor itself and its orchestrated evaluations
-HOST_EVAL_MONITOR_OUTPUT_BASE_DIR="${HOST_PROJECT_DIR}/models/May14_bak/eval"
+HOST_EVAL_MONITOR_OUTPUT_BASE_DIR="${HOST_PROJECT_DIR}/models/100M_s43_modelk/eval"
 
 HOST_PRIMING_BASE_DIR="${HOST_PROJECT_DIR}/eval"
 
@@ -82,7 +82,7 @@ echo "Starting Python evaluation_monitor.py script inside Singularity container.
 # --- Define paths relative to container mount points ---
 CONTAINER_MONITOR_SCRIPT_PATH="${CONTAINER_WORKSPACE}/src/evaluation_monitor.py" # Path to evaluation_monitor.py
 CONTAINER_VALID_DATA_PATH="${CONTAINER_DATA_DIR}/processed/test_set_10m" # For standard eval
-CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/just_shota" # For priming eval
+CONTAINER_PRIMING_PATH="${CONTAINER_PRIMING_DIR}/priming_simple_no_null" # For priming eval
 
 # --- Define Neptune args ---
 NEPTUNE_PROJECT_ARG=""
