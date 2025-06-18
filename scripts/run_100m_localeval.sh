@@ -124,12 +124,12 @@ singularity exec --nv \
         \
         --use_amp \
         --num_workers ${SLURM_CPUS_PER_TASK:-4} \
-        --seed 42 \
+        --seed 1 \
         \
-        --logging_steps 200 \
-        --eval_steps 400 \
-        --save_steps 400 \
-        --priming_eval_steps 400 \
+        --logging_steps 50 \
+        --eval_steps 185 \
+        --save_steps 185 \
+        --priming_eval_steps 185 \
         \
         ${NEPTUNE_PROJECT_ARG} \
         --neptune_run_name "${NEPTUNE_RUN_NAME}" \
